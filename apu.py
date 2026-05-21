@@ -1,0 +1,570 @@
+from __future__ import annotations
+
+from collections import deque
+from typing import Protocol
+
+
+CPU_CLOCK_HZ = 4_194_304
+FRAME_SEQUENCER_PERIOD = 8192
+DEFAULT_SAMPLE_RATE = 44_100
+DEFAULT_AUDIO_BUFFER_LIMIT = 8192
+DMG_HIGH_PASS_CHARGE_FACTOR = 0.999958
+
+NR52 = 0x26
+NR50 = 0x24
+NR51 = 0x25
+WAVE_RAM_START = 0x30
+WAVE_RAM_END = 0x3F
+UNUSED_AUDIO_REGISTERS = {0x15, 0x1F, *range(0x27, 0x30)}
+
+TRIGGER_REGISTERS = {
+    0x14: 0,
+    0x19: 1,
+    0x1E: 2,
+    0x23: 3,
+}
+
+LENGTH_REGISTERS = {
+    0x11: 0,
+    0x16: 1,
+    0x1B: 2,
+    0x20: 3,
+}
+
+LENGTH_MAX = {
+    0: 64,
+    1: 64,
+    2: 256,
+    3: 64,
+}
+
+DAC_REGISTERS = {
+    0: 0x12,
+    1: 0x17,
+    2: 0x1A,
+    3: 0x21,
+}
+
+ENVELOPE_REGISTERS = {
+    0x12: 0,
+    0x17: 1,
+    0x21: 3,
+}
+
+FREQUENCY_LOW_REGISTERS = {
+    0: 0x13,
+    1: 0x18,
+    2: 0x1D,
+}
+
+FREQUENCY_HIGH_REGISTERS = {
+    0: 0x14,
+    1: 0x19,
+    2: 0x1E,
+}
+
+PULSE_DUTY_PATTERNS = (
+    (0, 0, 0, 0, 0, 0, 0, 1),
+    (1, 0, 0, 0, 0, 0, 0, 1),
+    (1, 0, 0, 0, 0, 1, 1, 1),
+    (0, 1, 1, 1, 1, 1, 1, 0),
+)
+
+NOISE_DIVISORS = (8, 16, 32, 48, 64, 80, 96, 112)
+
+READ_MASKS = {
+    0x10: 0x80,
+    0x11: 0x3F,
+    0x13: 0xFF,
+    0x14: 0xBF,
+    0x16: 0x3F,
+    0x18: 0xFF,
+    0x19: 0xBF,
+    0x1A: 0x7F,
+    0x1B: 0xFF,
+    0x1C: 0x9F,
+    0x1D: 0xFF,
+    0x1E: 0xBF,
+    0x20: 0xFF,
+    0x23: 0xBF,
+}
+
+
+class APUBus(Protocol):
+    io: bytearray
+
+
+class APU:
+    def __init__(
+        self,
+        bus: APUBus,
+        *,
+        sample_rate: int = DEFAULT_SAMPLE_RATE,
+        audio_buffer_limit: int = DEFAULT_AUDIO_BUFFER_LIMIT,
+    ) -> None:
+        self.bus = bus
+        if sample_rate <= 0:
+            raise ValueError("APU sample rate must be positive")
+        self.frame_sequence_step = 0
+        self._frame_sequence_counter = 0
+        self.sample_rate = sample_rate
+        self._sample_cycle_accumulator = 0
+        self._audio_samples: deque[tuple[int, int]] = deque(maxlen=audio_buffer_limit)
+        self._high_pass_capacitors = [0.0, 0.0]
+        self.channel_active = self.bus.io[NR52] & 0x0F
+        self._channel_output_enabled = [False, False, False, False]
+        self.length_timers = [0, 0, 0, 0]
+        self.length_enabled = [False, False, False, False]
+        self.channel_volumes = [self._initial_volume(channel) for channel in range(4)]
+        self._envelope_timers = [0, 0, 0, 0]
+        self._envelope_enabled = [False, False, False, False]
+        self._sweep_timer = 0
+        self._sweep_enabled = False
+        self._sweep_shadow_period = 0
+        self._sweep_negate_calculated = False
+        self.frequency_timers = [0, 0, 0, 0]
+        self.duty_positions = [0, 0]
+        self.wave_position = 0
+        self.wave_sample_buffer = 0
+        self.noise_lfsr = 0x7FFF
+
+    @property
+    def powered(self) -> bool:
+        return bool(self.bus.io[NR52] & 0x80)
+
+    def read(self, offset: int) -> int:
+        offset &= 0x7F
+        if offset == NR52:
+            return 0x70 | (0x80 if self.powered else 0) | (self.channel_active & 0x0F)
+        if offset in UNUSED_AUDIO_REGISTERS:
+            return 0xFF
+        if WAVE_RAM_START <= offset <= WAVE_RAM_END:
+            if self._wave_channel_active():
+                return 0xFF
+            return self.bus.io[offset]
+        return self.bus.io[offset] | READ_MASKS.get(offset, 0x00)
+
+    def write(self, offset: int, value: int) -> None:
+        offset &= 0x7F
+        value &= 0xFF
+        if offset == NR52:
+            self._write_nr52(value)
+            return
+        if WAVE_RAM_START <= offset <= WAVE_RAM_END:
+            if self._wave_channel_active():
+                return
+            self.bus.io[offset] = value
+            return
+        if offset in UNUSED_AUDIO_REGISTERS:
+            return
+        if not self.powered:
+            return
+
+        old_value = self.bus.io[offset]
+        self.bus.io[offset] = value
+        if offset == 0x10:
+            self._handle_sweep_register_write(old_value, value)
+        if offset in LENGTH_REGISTERS:
+            self._write_length_register(LENGTH_REGISTERS[offset], value)
+        if offset in TRIGGER_REGISTERS:
+            channel = TRIGGER_REGISTERS[offset]
+            self._write_trigger_register(channel, value)
+            if value & 0x80:
+                self._trigger_channel(channel)
+        if offset in DAC_REGISTERS.values():
+            self._disable_channel_if_dac_off(offset)
+
+    def tick(self, cycles: int) -> None:
+        if cycles <= 0:
+            return
+        if not self.powered:
+            self._collect_output_samples(cycles)
+            return
+        self._tick_frequency_timers(cycles)
+        self._frame_sequence_counter += cycles
+        while self._frame_sequence_counter >= FRAME_SEQUENCER_PERIOD:
+            self._frame_sequence_counter -= FRAME_SEQUENCER_PERIOD
+            self._advance_frame_sequence()
+        self._collect_output_samples(cycles)
+
+    def sample_channels(self) -> tuple[int, int, int, int]:
+        if not self.powered:
+            return (0, 0, 0, 0)
+        return (
+            self._pulse_sample(0),
+            self._pulse_sample(1),
+            self._wave_sample(),
+            self._noise_sample(),
+        )
+
+    def dac_sample_channels(self) -> tuple[int, int, int, int]:
+        if not self.powered:
+            return (0, 0, 0, 0)
+        return tuple(
+            self._dac_output(channel, sample)
+            for channel, sample in enumerate(self.sample_channels())
+        )
+
+    def mix_sample(self) -> tuple[int, int]:
+        channels = self.dac_sample_channels()
+        nr50 = self.bus.io[NR50]
+        nr51 = self.bus.io[NR51]
+        left_volume = ((nr50 >> 4) & 0x07) + 1
+        right_volume = (nr50 & 0x07) + 1
+        left = 0
+        right = 0
+        for channel, sample in enumerate(channels):
+            if nr51 & (1 << channel):
+                right += sample
+            if nr51 & (1 << (channel + 4)):
+                left += sample
+        return left * left_volume, right * right_volume
+
+    def output_sample(self) -> tuple[int, int]:
+        return self._high_pass_filter_sample(self.mix_sample())
+
+    def drain_audio_samples(self) -> list[tuple[int, int]]:
+        samples = list(self._audio_samples)
+        self._audio_samples.clear()
+        return samples
+
+    def set_sample_rate(self, sample_rate: int) -> None:
+        if sample_rate <= 0:
+            raise ValueError("APU sample rate must be positive")
+        self.sample_rate = sample_rate
+        self._sample_cycle_accumulator = 0
+        self._audio_samples.clear()
+        self._reset_high_pass_filter()
+
+    def on_div_write(self, *, div_apu_falling_edge: bool) -> None:
+        self._frame_sequence_counter = 0
+        if self.powered and div_apu_falling_edge:
+            self._advance_frame_sequence()
+
+    def _write_nr52(self, value: int) -> None:
+        was_powered = self.powered
+        if not value & 0x80:
+            self._power_off()
+        elif not was_powered:
+            self.bus.io[NR52] = 0x80
+            self.channel_active = 0
+            self.frame_sequence_step = 0
+            self._frame_sequence_counter = 0
+        else:
+            self.bus.io[NR52] = 0x80 | (self.bus.io[NR52] & 0x0F)
+
+    def _power_off(self) -> None:
+        for offset in range(0x10, 0x26):
+            self.bus.io[offset] = 0
+        self.bus.io[NR52] = 0
+        self.channel_active = 0
+        self.frame_sequence_step = 0
+        self._frame_sequence_counter = 0
+        self.length_timers = [0, 0, 0, 0]
+        self.length_enabled = [False, False, False, False]
+        self.channel_volumes = [0, 0, 0, 0]
+        self._channel_output_enabled = [False, False, False, False]
+        self._reset_high_pass_filter()
+        self._envelope_timers = [0, 0, 0, 0]
+        self._envelope_enabled = [False, False, False, False]
+        self._sweep_timer = 0
+        self._sweep_enabled = False
+        self._sweep_shadow_period = 0
+        self._sweep_negate_calculated = False
+        self.frequency_timers = [0, 0, 0, 0]
+        self.duty_positions = [0, 0]
+        self.wave_position = 0
+        self.wave_sample_buffer = 0
+        self.noise_lfsr = 0x7FFF
+
+    def _trigger_channel(self, channel: int) -> None:
+        if self.length_timers[channel] == 0:
+            self.length_timers[channel] = LENGTH_MAX[channel]
+            if self.length_enabled[channel] and not self._next_frame_step_clocks_length():
+                self.length_timers[channel] -= 1
+        self._restart_envelope(channel)
+        if self._channel_dac_enabled(channel):
+            self.channel_active |= 1 << channel
+            self._channel_output_enabled[channel] = True
+        else:
+            self._disable_channel(channel)
+        if channel == 0:
+            self._restart_sweep()
+        reload_cycles = self._frequency_timer_reload(channel)
+        self.frequency_timers[channel] = reload_cycles if reload_cycles is not None else 0
+        if channel == 2:
+            self.wave_position = 0
+        elif channel == 3:
+            self.noise_lfsr = 0x7FFF
+
+    def _channel_dac_enabled(self, channel: int) -> bool:
+        register = DAC_REGISTERS[channel]
+        value = self.bus.io[register]
+        if channel == 2:
+            return bool(value & 0x80)
+        return bool(value & 0xF8)
+
+    def _disable_channel_if_dac_off(self, offset: int) -> None:
+        for channel, register in DAC_REGISTERS.items():
+            if register == offset and not self._channel_dac_enabled(channel):
+                self._disable_channel(channel)
+
+    def _disable_channel(self, channel: int) -> None:
+        self.channel_active &= ~(1 << channel)
+        self._channel_output_enabled[channel] = False
+
+    def _dac_output(self, channel: int, sample: int) -> int:
+        if not self._channel_output_enabled[channel]:
+            return 0
+        if not self._channel_dac_enabled(channel):
+            return 0
+        return (sample & 0x0F) * 2 - 15
+
+    def _high_pass_filter_sample(self, sample: tuple[int, int]) -> tuple[int, int]:
+        filtered = []
+        for index, value in enumerate(sample):
+            output = float(value) - self._high_pass_capacitors[index]
+            self._high_pass_capacitors[index] = (
+                float(value) - output * DMG_HIGH_PASS_CHARGE_FACTOR
+            )
+            filtered.append(int(round(output)))
+        return filtered[0], filtered[1]
+
+    def _reset_high_pass_filter(self) -> None:
+        self._high_pass_capacitors = [0.0, 0.0]
+
+    def _wave_channel_active(self) -> bool:
+        return self.powered and bool(self._channel_output_enabled[2])
+
+    def _write_length_register(self, channel: int, value: int) -> None:
+        max_length = LENGTH_MAX[channel]
+        mask = 0xFF if channel == 2 else 0x3F
+        self.length_timers[channel] = max_length - (value & mask)
+
+    def _write_trigger_register(self, channel: int, value: int) -> None:
+        was_enabled = self.length_enabled[channel]
+        self.length_enabled[channel] = bool(value & 0x40)
+        if (
+            not was_enabled
+            and self.length_enabled[channel]
+            and self.length_timers[channel] > 0
+            and not self._next_frame_step_clocks_length()
+        ):
+            self._clock_length_timer(channel)
+
+    def _next_frame_step_clocks_length(self) -> bool:
+        return ((self.frame_sequence_step + 1) & 0x07) in {0, 2, 4, 6}
+
+    def _next_frame_step_clocks_envelope(self) -> bool:
+        return ((self.frame_sequence_step + 1) & 0x07) == 7
+
+    def _clock_frame_sequencer(self) -> None:
+        if self.frame_sequence_step in {0, 2, 4, 6}:
+            self._clock_length_timers()
+        if self.frame_sequence_step in {2, 6}:
+            self._clock_sweep()
+        if self.frame_sequence_step == 7:
+            self._clock_envelopes()
+
+    def _advance_frame_sequence(self) -> None:
+        self.frame_sequence_step = (self.frame_sequence_step + 1) & 0x07
+        self._clock_frame_sequencer()
+
+    def _clock_length_timers(self) -> None:
+        for channel in range(4):
+            self._clock_length_timer(channel)
+
+    def _clock_length_timer(self, channel: int) -> None:
+        if not self.length_enabled[channel] or self.length_timers[channel] == 0:
+            return
+        self.length_timers[channel] -= 1
+        if self.length_timers[channel] == 0:
+            self._disable_channel(channel)
+
+    def _restart_envelope(self, channel: int) -> None:
+        register = DAC_REGISTERS[channel]
+        if register not in ENVELOPE_REGISTERS:
+            return
+        period = self.bus.io[register] & 0x07
+        self.channel_volumes[channel] = self._initial_volume(channel)
+        timer = period or 8
+        if self._next_frame_step_clocks_envelope():
+            timer += 1
+        self._envelope_timers[channel] = timer
+        self._envelope_enabled[channel] = period != 0
+
+    def _initial_volume(self, channel: int) -> int:
+        register = DAC_REGISTERS[channel]
+        if register not in ENVELOPE_REGISTERS:
+            return 0
+        return (self.bus.io[register] >> 4) & 0x0F
+
+    def _clock_envelopes(self) -> None:
+        for channel in (0, 1, 3):
+            if not self._envelope_enabled[channel]:
+                continue
+            self._envelope_timers[channel] -= 1
+            if self._envelope_timers[channel] > 0:
+                continue
+            register = DAC_REGISTERS[channel]
+            period = self.bus.io[register] & 0x07
+            self._envelope_timers[channel] = period or 8
+            delta = 1 if self.bus.io[register] & 0x08 else -1
+            next_volume = self.channel_volumes[channel] + delta
+            if 0 <= next_volume <= 15:
+                self.channel_volumes[channel] = next_volume
+            else:
+                self._envelope_enabled[channel] = False
+
+    def _restart_sweep(self) -> None:
+        self._sweep_shadow_period = self._channel_period(0)
+        self._sweep_negate_calculated = False
+        pace = self._sweep_pace()
+        shift = self._sweep_shift()
+        self._sweep_timer = pace or 8
+        self._sweep_enabled = pace != 0 or shift != 0
+        if shift != 0:
+            self._disable_ch1_if_sweep_overflows(self._calculate_sweep_period())
+
+    def _clock_sweep(self) -> None:
+        if not self._sweep_enabled:
+            return
+        self._sweep_timer -= 1
+        if self._sweep_timer > 0:
+            return
+
+        pace = self._sweep_pace()
+        self._sweep_timer = pace or 8
+        if pace == 0:
+            return
+        if self._sweep_shift() == 0:
+            return
+
+        new_period = self._calculate_sweep_period()
+        if self._disable_ch1_if_sweep_overflows(new_period):
+            return
+
+        self._sweep_shadow_period = new_period
+        self._write_channel_period(0, new_period)
+        self._disable_ch1_if_sweep_overflows(self._calculate_sweep_period())
+
+    def _handle_sweep_register_write(self, old_value: int, value: int) -> None:
+        if (
+            self._sweep_negate_calculated
+            and old_value & 0x08
+            and not value & 0x08
+        ):
+            self._disable_channel(0)
+
+    def _sweep_pace(self) -> int:
+        return (self.bus.io[0x10] >> 4) & 0x07
+
+    def _sweep_shift(self) -> int:
+        return self.bus.io[0x10] & 0x07
+
+    def _calculate_sweep_period(self) -> int:
+        delta = self._sweep_shadow_period >> self._sweep_shift()
+        if self.bus.io[0x10] & 0x08:
+            self._sweep_negate_calculated = True
+            return self._sweep_shadow_period - delta
+        return self._sweep_shadow_period + delta
+
+    def _disable_ch1_if_sweep_overflows(self, period: int) -> bool:
+        if period > 0x7FF:
+            self._disable_channel(0)
+            return True
+        return False
+
+    def _channel_period(self, channel: int) -> int:
+        low = self.bus.io[FREQUENCY_LOW_REGISTERS[channel]]
+        high = self.bus.io[FREQUENCY_HIGH_REGISTERS[channel]] & 0x07
+        return low | (high << 8)
+
+    def _write_channel_period(self, channel: int, period: int) -> None:
+        period &= 0x7FF
+        low_register = FREQUENCY_LOW_REGISTERS[channel]
+        high_register = FREQUENCY_HIGH_REGISTERS[channel]
+        self.bus.io[low_register] = period & 0xFF
+        self.bus.io[high_register] = (self.bus.io[high_register] & 0xF8) | (period >> 8)
+
+    def _tick_frequency_timers(self, cycles: int) -> None:
+        for channel in range(4):
+            if not self._channel_output_enabled[channel]:
+                continue
+            reload_cycles = self._frequency_timer_reload(channel)
+            if reload_cycles is None:
+                continue
+            self.frequency_timers[channel] -= cycles
+            while self.frequency_timers[channel] <= 0:
+                self.frequency_timers[channel] += reload_cycles
+                self._advance_waveform(channel)
+
+    def _frequency_timer_reload(self, channel: int) -> int | None:
+        if channel in {0, 1}:
+            return max(1, (2048 - self._channel_period(channel)) * 4)
+        if channel == 2:
+            return max(1, (2048 - self._channel_period(channel)) * 2)
+        return self._noise_timer_reload()
+
+    def _noise_timer_reload(self) -> int | None:
+        value = self.bus.io[0x22]
+        if ((value >> 4) & 0x0F) >= 14:
+            return None
+        divisor = NOISE_DIVISORS[value & 0x07]
+        return max(1, divisor << ((value >> 4) & 0x0F))
+
+    def _advance_waveform(self, channel: int) -> None:
+        if channel in {0, 1}:
+            self.duty_positions[channel] = (self.duty_positions[channel] + 1) & 0x07
+        elif channel == 2:
+            self.wave_position = (self.wave_position + 1) & 0x1F
+            self.wave_sample_buffer = self._read_wave_ram_sample(self.wave_position)
+        else:
+            self._clock_noise_lfsr()
+
+    def _clock_noise_lfsr(self) -> None:
+        xor_bit = (self.noise_lfsr & 0x01) ^ ((self.noise_lfsr >> 1) & 0x01)
+        self.noise_lfsr = (self.noise_lfsr >> 1) | (xor_bit << 14)
+        if self.bus.io[0x22] & 0x08:
+            self.noise_lfsr = (self.noise_lfsr & ~0x40) | (xor_bit << 6)
+        self.noise_lfsr &= 0x7FFF
+
+    def _pulse_sample(self, channel: int) -> int:
+        if not self._channel_output_enabled[channel]:
+            return 0
+        if not self._channel_dac_enabled(channel):
+            return 0
+        duty_register = 0x11 if channel == 0 else 0x16
+        duty = (self.bus.io[duty_register] >> 6) & 0x03
+        if not PULSE_DUTY_PATTERNS[duty][self.duty_positions[channel]]:
+            return 0
+        return self.channel_volumes[channel]
+
+    def _wave_sample(self) -> int:
+        if not self._channel_output_enabled[2]:
+            return 0
+        if not self._channel_dac_enabled(2):
+            return 0
+        volume_code = (self.bus.io[0x1C] >> 5) & 0x03
+        if volume_code == 0:
+            return 0
+        return self.wave_sample_buffer >> (volume_code - 1)
+
+    def _read_wave_ram_sample(self, sample_index: int) -> int:
+        sample_byte = self.bus.io[WAVE_RAM_START + ((sample_index & 0x1F) // 2)]
+        if sample_index & 1:
+            return sample_byte & 0x0F
+        return sample_byte >> 4
+
+    def _noise_sample(self) -> int:
+        if not self._channel_output_enabled[3]:
+            return 0
+        if not self._channel_dac_enabled(3):
+            return 0
+        return self.channel_volumes[3] if not self.noise_lfsr & 0x01 else 0
+
+    def _collect_output_samples(self, cycles: int) -> None:
+        self._sample_cycle_accumulator += cycles * self.sample_rate
+        while self._sample_cycle_accumulator >= CPU_CLOCK_HZ:
+            self._sample_cycle_accumulator -= CPU_CLOCK_HZ
+            self._audio_samples.append(self.output_sample())

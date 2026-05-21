@@ -1,0 +1,18 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Local runtime/tooling downloaded for verification
+.tools/
+
+# Generated debug traces
+traces/
+
+# Local ROM dumps and downloaded test ROM archives
+roms/**/*.gb
+roms/**/*.gbc
+roms/**/*.zip
+
+# Keep placeholder directories
+!roms/.gitkeep
+
