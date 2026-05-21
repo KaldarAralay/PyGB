@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 
 
 DMG_FPS = 4_194_304 / (154 * 456)
+MIN_RELIABLE_TK_DELAY_SECONDS = 0.004
 TK_DMG_COLORS = tuple(f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in DMG_GRAYSCALE)
 PPM_DMG_PIXELS = tuple(bytes(rgb) for rgb in DMG_GRAYSCALE)
 PPM_SCREEN_HEADER = f"P6\n{SCREEN_WIDTH} {SCREEN_HEIGHT}\n255\n".encode("ascii")
@@ -94,6 +96,13 @@ def display_command_for_key(keysym: str) -> str | None:
 
 def buttons_for_keys(keys: set[str]) -> set[str]:
     return {button for key in keys if (button := button_for_key(key)) is not None}
+
+
+def frame_delay_ms(target_seconds: float, elapsed_seconds: float) -> int:
+    remaining_seconds = target_seconds - elapsed_seconds
+    if remaining_seconds <= MIN_RELIABLE_TK_DELAY_SECONDS:
+        return 0
+    return max(1, ceil(remaining_seconds * 1000))
 
 
 def framebuffer_to_tk_rows(framebuffer: list[list[int]], scale: int = 1) -> list[str]:
@@ -308,8 +317,7 @@ class TkDisplay:
                 elapsed,
             )
         target = 1.0 / self.config.fps
-        remaining_ms = int((target - elapsed) * 1000)
-        self._schedule_next_frame(max(1, remaining_ms) if remaining_ms > 0 else 0)
+        self._schedule_next_frame(frame_delay_ms(target, elapsed))
 
     def _draw_frame(self) -> None:
         if self._image is None or self._label is None:

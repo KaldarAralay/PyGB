@@ -11,6 +11,7 @@ from display import (
     button_for_key,
     buttons_for_keys,
     display_command_for_key,
+    frame_delay_ms,
     framebuffer_to_tk_image_data,
     framebuffer_to_tk_ppm_data,
     framebuffer_to_tk_rows,
@@ -173,6 +174,12 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(display_command_for_key("M"), "audio")
         self.assertEqual(display_command_for_key("Escape"), "quit")
         self.assertIsNone(display_command_for_key("z"))
+
+    def test_frame_delay_uses_idle_only_when_behind(self) -> None:
+        self.assertEqual(frame_delay_ms(1 / 60, 1 / 60), 0)
+        self.assertEqual(frame_delay_ms(1 / 60, 0.0161), 0)
+        self.assertEqual(frame_delay_ms(1 / 60, 0.0130), 0)
+        self.assertEqual(frame_delay_ms(1 / 60, 0.0100), 7)
 
     def test_framebuffer_rows_map_dmg_shades_to_tk_colors(self) -> None:
         rows = framebuffer_to_tk_rows([[0, 1, 2, 3]])

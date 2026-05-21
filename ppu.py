@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 
@@ -49,6 +50,31 @@ DMG_GRAYSCALE = (
     (85, 85, 85),
     (0, 0, 0),
 )
+
+
+@lru_cache(maxsize=4096)
+def _decoded_tile_row(
+    lo: int,
+    hi: int,
+    palette: int,
+) -> tuple[tuple[int, int, int, int, int, int, int, int], tuple[int, int, int, int, int, int, int, int]]:
+    shades = (
+        palette & 0x03,
+        (palette >> 2) & 0x03,
+        (palette >> 4) & 0x03,
+        (palette >> 6) & 0x03,
+    )
+    color_ids = (
+        ((hi >> 7) & 1) << 1 | ((lo >> 7) & 1),
+        ((hi >> 6) & 1) << 1 | ((lo >> 6) & 1),
+        ((hi >> 5) & 1) << 1 | ((lo >> 5) & 1),
+        ((hi >> 4) & 1) << 1 | ((lo >> 4) & 1),
+        ((hi >> 3) & 1) << 1 | ((lo >> 3) & 1),
+        ((hi >> 2) & 1) << 1 | ((lo >> 2) & 1),
+        ((hi >> 1) & 1) << 1 | ((lo >> 1) & 1),
+        (hi & 1) << 1 | (lo & 1),
+    )
+    return color_ids, tuple(shades[color_id] for color_id in color_ids)
 
 
 @dataclass(frozen=True)
@@ -1874,12 +1900,6 @@ class PPU:
         end_x: int,
     ) -> None:
         vram = self.bus.vram
-        shades = (
-            palette & 0x03,
-            (palette >> 2) & 0x03,
-            (palette >> 4) & 0x03,
-            (palette >> 6) & 0x03,
-        )
         unsigned_tile_data = bool(lcdc & LCDC_BG_WINDOW_TILE_DATA)
         x = start_x
         while x < end_x:
@@ -1894,12 +1914,14 @@ class PPU:
             lo = vram[tile_address & 0x1FFF]
             hi = vram[(tile_address + 1) & 0x1FFF]
             bit_offset = bg_x & 0x07
-            for offset in range(span):
-                bit = 7 - bit_offset - offset
-                color_id = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1)
-                px = x + offset
-                bg_color_ids[px] = color_id
-                row[px] = shades[color_id]
+            color_ids, shade_pixels = _decoded_tile_row(lo, hi, palette)
+            if bit_offset == 0 and span == 8:
+                bg_color_ids[x : x + 8] = color_ids
+                row[x : x + 8] = shade_pixels
+            else:
+                span_end = bit_offset + span
+                bg_color_ids[x : x + span] = color_ids[bit_offset:span_end]
+                row[x : x + span] = shade_pixels[bit_offset:span_end]
             x += span
 
     def _render_unscrolled_tilemap_span_fast(
@@ -1915,12 +1937,6 @@ class PPU:
         end_x: int,
     ) -> None:
         vram = self.bus.vram
-        shades = (
-            palette & 0x03,
-            (palette >> 2) & 0x03,
-            (palette >> 4) & 0x03,
-            (palette >> 6) & 0x03,
-        )
         unsigned_tile_data = bool(lcdc & LCDC_BG_WINDOW_TILE_DATA)
         x = start_x
         while x < end_x:
@@ -1936,12 +1952,14 @@ class PPU:
             lo = vram[tile_address & 0x1FFF]
             hi = vram[(tile_address + 1) & 0x1FFF]
             bit_offset = wrapped_x & 0x07
-            for offset in range(span):
-                bit = 7 - bit_offset - offset
-                color_id = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1)
-                px = x + offset
-                bg_color_ids[px] = color_id
-                row[px] = shades[color_id]
+            color_ids, shade_pixels = _decoded_tile_row(lo, hi, palette)
+            if bit_offset == 0 and span == 8:
+                bg_color_ids[x : x + 8] = color_ids
+                row[x : x + 8] = shade_pixels
+            else:
+                span_end = bit_offset + span
+                bg_color_ids[x : x + span] = color_ids[bit_offset:span_end]
+                row[x : x + span] = shade_pixels[bit_offset:span_end]
             x += span
 
     def _render_sprites_line(
