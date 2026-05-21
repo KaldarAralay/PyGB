@@ -659,8 +659,16 @@ class APU:
 
     def _tick_frequency_timers(self, cycles: int) -> None:
         enabled = self._channel_output_enabled
+        volumes = self.channel_volumes
         timers = self.frequency_timers
         io = self.bus.io
+        if not (
+            (enabled[0] and (volumes[0] > 0 or (self._envelope_enabled[0] and io[0x12] & 0x08)))
+            or (enabled[1] and (volumes[1] > 0 or (self._envelope_enabled[1] and io[0x17] & 0x08)))
+            or (enabled[2] and (io[0x1C] & 0x60))
+            or (enabled[3] and (volumes[3] > 0 or (self._envelope_enabled[3] and io[0x21] & 0x08)))
+        ):
+            return
 
         if enabled[0]:
             period = io[0x13] | ((io[0x14] & 0x07) << 8)

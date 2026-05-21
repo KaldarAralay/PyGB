@@ -1966,38 +1966,48 @@ class PPU:
             if raw_x == 0 and sprite_x < 0:
                 saw_fully_off_left_sprite = True
 
+        prepared_sprites: list[tuple[int, int, int, int, int, tuple[int, int, int, int]]] = []
+        for sprite_x, index, sprite_y, tile_id, attrs, _raw_x in selected:
+            fetch_delay = fetch_delays.get(index, 0)
+            lo = self._sprite_tile_byte(
+                self._sprite_byte_lcdc(sprite_x, 0, fetch_delay),
+                y,
+                sprite_y,
+                tile_id,
+                attrs,
+                0,
+            )
+            hi = self._sprite_tile_byte(
+                self._sprite_byte_lcdc(sprite_x, 2, fetch_delay),
+                y,
+                sprite_y,
+                tile_id,
+                attrs,
+                1,
+            )
+            palette = state.obp1 if attrs & OBJ_DMG_PALETTE else state.obp0
+            shades = (
+                palette & 0x03,
+                (palette >> 2) & 0x03,
+                (palette >> 4) & 0x03,
+                (palette >> 6) & 0x03,
+            )
+            prepared_sprites.append((sprite_x, sprite_x + 8, attrs, lo, hi, shades))
+
         for x in range(start_x, end_x):
-            for sprite_x, index, sprite_y, tile_id, attrs, _raw_x in selected:
-                if not sprite_x <= x < sprite_x + 8:
+            for sprite_x, sprite_right, attrs, lo, hi, shades in prepared_sprites:
+                if not sprite_x <= x < sprite_right:
                     continue
                 tile_x = x - sprite_x
                 if attrs & OBJ_X_FLIP:
                     tile_x = 7 - tile_x
-                fetch_delay = fetch_delays.get(index, 0)
-                lo = self._sprite_tile_byte(
-                    self._sprite_byte_lcdc(sprite_x, 0, fetch_delay),
-                    y,
-                    sprite_y,
-                    tile_id,
-                    attrs,
-                    0,
-                )
-                hi = self._sprite_tile_byte(
-                    self._sprite_byte_lcdc(sprite_x, 2, fetch_delay),
-                    y,
-                    sprite_y,
-                    tile_id,
-                    attrs,
-                    1,
-                )
                 bit = 7 - tile_x
                 color_id = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1)
                 if color_id == 0:
                     continue
                 if attrs & OBJ_PRIORITY and bg_color_ids[x] != 0:
                     break
-                palette = state.obp1 if attrs & OBJ_DMG_PALETTE else state.obp0
-                row[x] = self._map_dmg_palette(palette, color_id)
+                row[x] = shades[color_id]
                 break
 
     def _tilemap_pixel(
