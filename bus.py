@@ -275,6 +275,28 @@ class Bus:
         if self._oam_dma_requested:
             self._begin_oam_dma()
 
+    def cycles_until_next_interrupt_event(self, max_cycles: int) -> int:
+        if max_cycles <= 0:
+            return 0
+        if self._stopped:
+            return max_cycles
+        if self._tima_reload_delay or self._oam_dma_active or self._oam_dma_requested:
+            return 1
+
+        cycles = max_cycles
+        if self._serial_transfer_cycles:
+            cycles = min(cycles, self._serial_transfer_cycles)
+
+        tac = self.io[0x07]
+        if tac & 0x04:
+            bit = (9, 3, 5, 7)[tac & 0x03]
+            period = 1 << (bit + 1)
+            cycles_until_timer_edge = period - (self._system_counter % period)
+            cycles = min(cycles, cycles_until_timer_edge)
+
+        cycles = min(cycles, self.ppu.cycles_until_next_event())
+        return max(1, cycles)
+
     def perform_speed_switch(self) -> bool:
         key1 = self.io[0x4D]
         if not key1 & 0x01:

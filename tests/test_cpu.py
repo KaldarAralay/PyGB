@@ -395,6 +395,15 @@ class CPUTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_instructions"):
             cpu.run(max_instructions=-1)
 
+    def test_run_bulk_halt_preserves_instruction_limit_cycles(self) -> None:
+        cpu, _ = make_cpu(bytes([0x76, 0x00]))
+
+        cpu.run(max_instructions=10)
+
+        self.assertTrue(cpu.halted)
+        self.assertEqual(cpu.pc, 0x0101)
+        self.assertEqual(cpu.cycles, 40)
+
 
 if __name__ == "__main__":
     unittest.main()

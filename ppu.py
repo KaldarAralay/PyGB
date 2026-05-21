@@ -194,6 +194,29 @@ class PPU:
                 self.line_dots = 0
                 self._advance_line()
 
+    def cycles_until_next_event(self) -> int:
+        if not self.lcd_enabled:
+            return DOTS_PER_LINE
+
+        next_dot = DOTS_PER_LINE
+        ly = self._scanline
+        if ly < VISIBLE_LINES:
+            if self.line_dots < MODE2_DOTS:
+                next_dot = min(next_dot, MODE2_DOTS)
+            if self.mode == MODE_DRAWING:
+                next_dot = min(next_dot, MODE2_DOTS + self._line_mode3_dots)
+            if self.line_dots < DOTS_PER_LINE - 4:
+                next_dot = min(next_dot, DOTS_PER_LINE - 4)
+        elif ly == LINES_PER_FRAME - 1 and self.line_dots < 4:
+            next_dot = min(next_dot, 4)
+
+        if self._hblank_stat_interrupt_dot is not None:
+            if self.line_dots >= self._hblank_stat_interrupt_dot:
+                return 1
+            next_dot = min(next_dot, self._hblank_stat_interrupt_dot)
+
+        return max(1, next_dot - self.line_dots)
+
     def on_oam_dma_active_cycle(self) -> None:
         if (
             self.lcd_enabled
@@ -1712,6 +1735,18 @@ class PPU:
     ) -> None:
         bg_map_base = 0x1C00 if state.lcdc & LCDC_BG_TILEMAP else 0x1800
         scx = self._line_scx(state)
+        if self._can_fast_render_tilemap():
+            self._render_background_line_fast(
+                state,
+                y,
+                row,
+                bg_color_ids,
+                start_x,
+                end_x,
+                bg_map_base,
+                scx,
+            )
+            return
 
         for x in range(start_x, end_x):
             bg_x = (x + scx) & 0xFF
@@ -1740,6 +1775,17 @@ class PPU:
         reactivation_glitch_x = (
             self._line_window_reactivation_glitch_x if state.wx in {4, 5} else None
         )
+        if reactivation_glitch_x is None and self._can_fast_render_tilemap():
+            self._render_window_line_fast(
+                state,
+                row,
+                bg_color_ids,
+                start_x,
+                end_x,
+                window_map_base,
+                wx,
+            )
+            return
 
         for x in range(start_x, end_x):
             if x == reactivation_glitch_x:
@@ -1757,6 +1803,146 @@ class PPU:
                 )
             bg_color_ids[x] = color_id
             row[x] = self._map_dmg_palette(state.bgp, color_id)
+
+    def _can_fast_render_tilemap(self) -> bool:
+        return (
+            not self._line_bg_tile_map_scy
+            and not self._line_bg_tile_data_sources
+            and not self._line_bg_tile_data_scy
+        )
+
+    def _render_background_line_fast(
+        self,
+        state: PPURenderState,
+        y: int,
+        row: list[int],
+        bg_color_ids: list[int],
+        start_x: int,
+        end_x: int,
+        map_base: int,
+        scx: int,
+    ) -> None:
+        bg_y = (y + state.scy) & 0xFF
+        tile_y = bg_y & 0x07
+        map_row_base = map_base + ((bg_y >> 3) * 32)
+        self._render_scrolled_tilemap_span_fast(
+            state.lcdc,
+            state.bgp,
+            map_row_base,
+            tile_y,
+            scx,
+            row,
+            bg_color_ids,
+            start_x,
+            end_x,
+        )
+
+    def _render_window_line_fast(
+        self,
+        state: PPURenderState,
+        row: list[int],
+        bg_color_ids: list[int],
+        start_x: int,
+        end_x: int,
+        map_base: int,
+        wx: int,
+    ) -> None:
+        tile_y = state.window_line & 0x07
+        map_row_base = map_base + (((state.window_line & 0xFF) >> 3) * 32)
+        self._render_unscrolled_tilemap_span_fast(
+            state.lcdc,
+            state.bgp,
+            map_row_base,
+            tile_y,
+            wx,
+            row,
+            bg_color_ids,
+            start_x,
+            end_x,
+        )
+
+    def _render_scrolled_tilemap_span_fast(
+        self,
+        lcdc: int,
+        palette: int,
+        map_row_base: int,
+        tile_y: int,
+        scx: int,
+        row: list[int],
+        bg_color_ids: list[int],
+        start_x: int,
+        end_x: int,
+    ) -> None:
+        vram = self.bus.vram
+        shades = (
+            palette & 0x03,
+            (palette >> 2) & 0x03,
+            (palette >> 4) & 0x03,
+            (palette >> 6) & 0x03,
+        )
+        unsigned_tile_data = bool(lcdc & LCDC_BG_WINDOW_TILE_DATA)
+        x = start_x
+        while x < end_x:
+            bg_x = (x + scx) & 0xFF
+            span = min(end_x - x, 8 - (bg_x & 0x07))
+            tile_id = vram[map_row_base + (bg_x >> 3)]
+            if unsigned_tile_data:
+                tile_address = tile_id * 16 + tile_y * 2
+            else:
+                signed_id = tile_id - 0x100 if tile_id & 0x80 else tile_id
+                tile_address = 0x1000 + signed_id * 16 + tile_y * 2
+            lo = vram[tile_address & 0x1FFF]
+            hi = vram[(tile_address + 1) & 0x1FFF]
+            bit_offset = bg_x & 0x07
+            for offset in range(span):
+                bit = 7 - bit_offset - offset
+                color_id = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1)
+                px = x + offset
+                bg_color_ids[px] = color_id
+                row[px] = shades[color_id]
+            x += span
+
+    def _render_unscrolled_tilemap_span_fast(
+        self,
+        lcdc: int,
+        palette: int,
+        map_row_base: int,
+        tile_y: int,
+        origin_x: int,
+        row: list[int],
+        bg_color_ids: list[int],
+        start_x: int,
+        end_x: int,
+    ) -> None:
+        vram = self.bus.vram
+        shades = (
+            palette & 0x03,
+            (palette >> 2) & 0x03,
+            (palette >> 4) & 0x03,
+            (palette >> 6) & 0x03,
+        )
+        unsigned_tile_data = bool(lcdc & LCDC_BG_WINDOW_TILE_DATA)
+        x = start_x
+        while x < end_x:
+            tilemap_x = x - origin_x
+            wrapped_x = tilemap_x & 0xFF
+            span = min(end_x - x, 8 - (wrapped_x & 0x07))
+            tile_id = vram[map_row_base + (wrapped_x >> 3)]
+            if unsigned_tile_data:
+                tile_address = tile_id * 16 + tile_y * 2
+            else:
+                signed_id = tile_id - 0x100 if tile_id & 0x80 else tile_id
+                tile_address = 0x1000 + signed_id * 16 + tile_y * 2
+            lo = vram[tile_address & 0x1FFF]
+            hi = vram[(tile_address + 1) & 0x1FFF]
+            bit_offset = wrapped_x & 0x07
+            for offset in range(span):
+                bit = 7 - bit_offset - offset
+                color_id = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1)
+                px = x + offset
+                bg_color_ids[px] = color_id
+                row[px] = shades[color_id]
+            x += span
 
     def _render_sprites_line(
         self,

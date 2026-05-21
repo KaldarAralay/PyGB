@@ -144,6 +144,17 @@ class CPU:
         while max_instructions is None or steps < max_instructions:
             if stop_condition is not None and stop_condition():
                 break
+            idle_cycles = self._halt_idle_cycles(
+                max_instructions=max_instructions,
+                steps=steps,
+                trace=trace,
+                step_mode=step_mode,
+                after_step=after_step,
+            )
+            if idle_cycles:
+                self._add_cycles(idle_cycles)
+                steps += idle_cycles // 4
+                continue
             self.step(trace=trace)
             steps += 1
             if after_step is not None:
@@ -158,6 +169,31 @@ class CPU:
                 response = input("step> ").strip().lower()
                 if response in {"q", "quit", "exit"}:
                     break
+
+    def _halt_idle_cycles(
+        self,
+        *,
+        max_instructions: int | None,
+        steps: int,
+        trace: bool,
+        step_mode: bool,
+        after_step,
+    ) -> int:
+        if trace or step_mode or after_step is not None:
+            return 0
+        if not self.halted or self._pending_interrupts():
+            return 0
+        if max_instructions is None:
+            max_cycles = 1 << 20
+        else:
+            remaining_steps = max_instructions - steps
+            if remaining_steps <= 0:
+                return 0
+            max_cycles = remaining_steps * 4
+        cycles = self.bus.cycles_until_next_interrupt_event(max_cycles)
+        if cycles <= 0:
+            return 0
+        return min(max_cycles, ((cycles + 3) // 4) * 4)
 
     def format_registers(self) -> str:
         return (
