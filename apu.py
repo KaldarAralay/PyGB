@@ -794,6 +794,22 @@ class APU:
         if pending_cycles <= 0:
             return
         subsample_rate = self._output_subsample_rate
+        constant_zero_sample = self._constant_zero_output_sample()
+        if constant_zero_sample is not None and self._resampler_matches_constant(constant_zero_sample):
+            self._advance_core(pending_cycles)
+            total_sample_cycles = self._sample_cycle_accumulator + pending_cycles * subsample_rate
+            subsamples = total_sample_cycles // CPU_CLOCK_HZ
+            self._sample_cycle_accumulator = total_sample_cycles % CPU_CLOCK_HZ
+            resample_count = self._resample_sample_count + subsamples
+            output_samples = resample_count // AUDIO_OVERSAMPLE_FACTOR
+            self._resample_sample_count = resample_count % AUDIO_OVERSAMPLE_FACTOR
+            self._resample_left_accumulator = constant_zero_sample[0] * self._resample_sample_count
+            self._resample_right_accumulator = constant_zero_sample[1] * self._resample_sample_count
+            self._append_silent_audio_samples(output_samples)
+            self._cycles_until_subsample = self._cycles_until_next_subsample()
+            self._pending_output_cycles = 0
+            return
+
         while pending_cycles > 0:
             cycles_to_subsample = self._cycles_until_subsample
             if pending_cycles < cycles_to_subsample:
@@ -861,3 +877,58 @@ class APU:
         self._audio_samples.append(sample)
         if self.profile_enabled:
             self._profile_generated_samples += 1
+
+    def _append_silent_audio_samples(self, count: int) -> None:
+        if count <= 0:
+            return
+        audio_samples = self._audio_samples
+        limit = self._audio_buffer_limit
+        overflow = max(0, len(audio_samples) + count - limit)
+        if overflow:
+            drop_existing = min(overflow, len(audio_samples))
+            for _ in range(drop_existing):
+                audio_samples.popleft()
+            self._dropped_audio_samples += overflow
+            if self.profile_enabled:
+                self._profile_dropped_samples += overflow
+        audio_samples.extend([(0, 0)] * min(count, limit))
+        if self.profile_enabled:
+            self._profile_generated_samples += count
+
+    def _constant_zero_output_sample(self) -> tuple[int, int] | None:
+        if not self.powered or not self._any_channel_dac_enabled():
+            return (0, 0)
+        if not self._channels_are_dc_bias_only():
+            return None
+        sample = self._mix_sample_from_dacs()
+        capacitors = self._high_pass_capacitors
+        if abs(float(sample[0]) - capacitors[0]) > 1e-9:
+            return None
+        if abs(float(sample[1]) - capacitors[1]) > 1e-9:
+            return None
+        return sample
+
+    def _resampler_matches_constant(self, sample: tuple[int, int]) -> bool:
+        return (
+            self._resample_left_accumulator == sample[0] * self._resample_sample_count
+            and self._resample_right_accumulator == sample[1] * self._resample_sample_count
+        )
+
+    def _channels_are_dc_bias_only(self) -> bool:
+        io = self.bus.io
+        if self._channel_output_enabled[0] and not self._pulse_channel_is_zero_volume(0, io[0x12]):
+            return False
+        if self._channel_output_enabled[1] and not self._pulse_channel_is_zero_volume(1, io[0x17]):
+            return False
+        if self._channel_output_enabled[2] and ((io[0x1C] >> 5) & 0x03) != 0:
+            return False
+        if self._channel_output_enabled[3] and not self._pulse_channel_is_zero_volume(3, io[0x21]):
+            return False
+        return True
+
+    def _pulse_channel_is_zero_volume(self, channel: int, dac_register_value: int) -> bool:
+        if self.channel_volumes[channel] != 0:
+            return False
+        envelope_period = dac_register_value & 0x07
+        envelope_increases = bool(dac_register_value & 0x08)
+        return not (envelope_increases and envelope_period != 0)

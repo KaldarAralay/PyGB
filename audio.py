@@ -95,9 +95,12 @@ class BufferedAudioPlayer:
         self._below_min_buffer = False
 
     def start(self) -> None:
+        self._prime(self._target_buffer_frames)
+
+    def _prime(self, silence_frames: int) -> None:
         if self._primed:
             return
-        remaining = self._target_buffer_frames
+        remaining = max(0, silence_frames)
         silence = [(0, 0)] * self._chunk_frames
         while remaining > 0:
             frames = min(remaining, self._chunk_frames)
@@ -106,8 +109,9 @@ class BufferedAudioPlayer:
         self._primed = True
 
     def write(self, samples: Iterable[AudioSample]) -> None:
-        self.start()
         incoming = list(samples)
+        if not self._primed:
+            self._prime(max(0, self._target_buffer_frames - len(incoming)))
         if incoming:
             self._pending.extend(incoming)
             self._submit_pending()

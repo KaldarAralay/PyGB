@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
 DMG_FPS = 4_194_304 / (154 * 456)
 MIN_RELIABLE_TK_DELAY_SECONDS = 0.004
+LIVE_AUDIO_TARGET_QUEUE_MS = 225.0
+LIVE_AUDIO_HIGH_WATERMARK_MS = 238.0
 TK_DMG_COLORS = tuple(f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in DMG_GRAYSCALE)
 PPM_DMG_PIXELS = tuple(bytes(rgb) for rgb in DMG_GRAYSCALE)
 PPM_SCREEN_HEADER = f"P6\n{SCREEN_WIDTH} {SCREEN_HEIGHT}\n255\n".encode("ascii")
@@ -103,6 +105,17 @@ def frame_delay_ms(target_seconds: float, elapsed_seconds: float) -> int:
     if remaining_seconds <= MIN_RELIABLE_TK_DELAY_SECONDS:
         return 0
     return max(1, ceil(remaining_seconds * 1000))
+
+
+def audio_pacing_delay_ms(
+    queued_ms: float,
+    *,
+    target_queue_ms: float = LIVE_AUDIO_TARGET_QUEUE_MS,
+    high_watermark_ms: float = LIVE_AUDIO_HIGH_WATERMARK_MS,
+) -> int:
+    if queued_ms <= high_watermark_ms:
+        return 0
+    return max(1, ceil(queued_ms - target_queue_ms))
 
 
 def framebuffer_to_tk_rows(framebuffer: list[list[int]], scale: int = 1) -> list[str]:
@@ -289,6 +302,7 @@ class TkDisplay:
         run_elapsed = 0.0
         draw_elapsed = 0.0
         audio_elapsed = 0.0
+        audio_stats = None
         if not self._paused:
             run_started = time.perf_counter()
             self.emulator.run(
@@ -300,7 +314,7 @@ class TkDisplay:
             run_elapsed = time.perf_counter() - run_started
             apu_profile = self._consume_apu_profile()
             audio_started = time.perf_counter()
-            self._write_audio()
+            audio_stats = self._write_audio()
             audio_elapsed = time.perf_counter() - audio_started
             draw_started = time.perf_counter()
             self._draw_frame()
@@ -314,10 +328,14 @@ class TkDisplay:
                 draw_elapsed,
                 audio_elapsed,
                 apu_profile,
+                audio_stats,
                 elapsed,
             )
         target = 1.0 / self.config.fps
-        self._schedule_next_frame(frame_delay_ms(target, elapsed))
+        delay_ms = frame_delay_ms(target, elapsed)
+        if audio_stats is not None:
+            delay_ms = max(delay_ms, audio_pacing_delay_ms(audio_stats.queued_ms))
+        self._schedule_next_frame(delay_ms)
 
     def _draw_frame(self) -> None:
         if self._image is None or self._label is None:
@@ -346,6 +364,7 @@ class TkDisplay:
         draw_seconds: float,
         audio_seconds: float,
         apu_profile,
+        audio_stats: AudioPlaybackStats | None,
         total_seconds: float,
     ) -> None:
         if not self.config.profile_window:
@@ -371,8 +390,8 @@ class TkDisplay:
             self._profile_apu_channel_disables += apu_profile.channel_disables
             self._profile_apu_dropped_samples += apu_profile.dropped_samples
         self._profile_total_seconds += total_seconds
-        if self._audio_player is not None:
-            self._profile_audio_stats = self._audio_player.stats()
+        if audio_stats is not None:
+            self._profile_audio_stats = audio_stats
             self._profile_min_audio_queue_ms = (
                 self._profile_audio_stats.queued_ms
                 if self._profile_min_audio_queue_ms is None
@@ -481,7 +500,6 @@ class TkDisplay:
                 target_buffer_ms=self.config.audio_buffer_ms,
                 chunk_ms=self.config.audio_chunk_ms,
             )
-            self._audio_player.start()
             self._open_audio_capture()
         except (RuntimeError, ValueError) as exc:
             self._audio_enabled = False
@@ -498,13 +516,14 @@ class TkDisplay:
         self.emulator.bus.apu.set_output_enabled(False)
         self._profile_audio_stats = None
 
-    def _write_audio(self) -> None:
+    def _write_audio(self) -> AudioPlaybackStats | None:
         if self._audio_player is None:
-            return
+            return None
         samples = self.emulator.drain_audio_samples()
         if self._audio_capture is not None:
             self._audio_capture.write(samples)
         self._audio_player.write(samples)
+        return self._audio_player.stats()
 
     def _configure_apu_profile(self) -> None:
         if hasattr(self.emulator.bus.apu, "profile_enabled"):

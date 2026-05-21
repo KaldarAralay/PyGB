@@ -8,6 +8,7 @@ from audio import AudioPlaybackStats
 from display import (
     DisplayConfig,
     TkDisplay,
+    audio_pacing_delay_ms,
     button_for_key,
     buttons_for_keys,
     display_command_for_key,
@@ -117,6 +118,7 @@ class FakeAudioPlayer:
         self.started = True
 
     def write(self, samples) -> None:
+        self.started = True
         self.writes.append(list(samples))
 
     def stats(self) -> AudioPlaybackStats:
@@ -180,6 +182,11 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(frame_delay_ms(1 / 60, 0.0161), 0)
         self.assertEqual(frame_delay_ms(1 / 60, 0.0130), 0)
         self.assertEqual(frame_delay_ms(1 / 60, 0.0100), 7)
+
+    def test_audio_pacing_waits_only_above_high_watermark(self) -> None:
+        self.assertEqual(audio_pacing_delay_ms(238.0), 0)
+        self.assertEqual(audio_pacing_delay_ms(238.1), 14)
+        self.assertEqual(audio_pacing_delay_ms(255.0), 30)
 
     def test_framebuffer_rows_map_dmg_shades_to_tk_colors(self) -> None:
         rows = framebuffer_to_tk_rows([[0, 1, 2, 3]])

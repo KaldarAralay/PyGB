@@ -703,6 +703,22 @@ class APUTests(unittest.TestCase):
         self.assertEqual(bus.apu.drain_audio_samples(), [(0, 0)])
         self.assertEqual(bus.apu.drain_audio_samples(), [])
 
+    def test_silent_output_fast_path_preserves_sample_count_and_frame_sequence(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.apu.set_sample_rate(4)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+        bus.apu.profile_enabled = True
+        bus.apu.set_output_enabled(True)
+
+        bus.apu.tick(CPU_CLOCK_HZ)
+
+        self.assertEqual(bus.apu.drain_audio_samples(), [(0, 0)] * 4)
+        self.assertEqual(bus.apu.frame_sequence_step, 0)
+        profile = bus.apu.consume_profile()
+        self.assertEqual(profile.generated_samples, 4)
+        self.assertEqual(profile.dropped_samples, 0)
+
     def test_audio_output_starts_disabled_until_requested(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.apu.set_sample_rate(4)
