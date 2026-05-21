@@ -418,6 +418,30 @@ class APUTests(unittest.TestCase):
         self.assertEqual(bus.io[0x13], 0x00)
         self.assertEqual(bus.io[0x14] & 0x07, 0x07)
 
+    def test_ch1_sweep_pace_zero_then_nonzero_reloads_timer(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+
+        bus.write8(0xFF10, 0x21)
+        bus.write8(0xFF12, 0xF0)
+        bus.write8(0xFF13, 0x00)
+        bus.write8(0xFF14, 0x84)
+        bus.apu._clock_sweep()
+
+        bus.write8(0xFF10, 0x01)
+        for _ in range(3):
+            bus.apu._clock_sweep()
+
+        self.assertEqual(bus.io[0x13], 0x00)
+        self.assertEqual(bus.io[0x14] & 0x07, 0x04)
+
+        bus.write8(0xFF10, 0x11)
+        bus.apu._clock_sweep()
+
+        self.assertEqual(bus.io[0x13], 0x00)
+        self.assertEqual(bus.io[0x14] & 0x07, 0x06)
+
     def test_pulse_frequency_timer_advances_duty_sample(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
@@ -449,6 +473,31 @@ class APUTests(unittest.TestCase):
 
         self.assertEqual(bus.apu.duty_positions[0], 2)
         self.assertEqual(bus.apu.frequency_timers[0], 2)
+
+    def test_pulse_trigger_preserves_frequency_timer_low_two_bits(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+
+        bus.apu.frequency_timers[0] = 6
+        bus.write8(0xFF11, 0x80)
+        bus.write8(0xFF12, 0xF0)
+        bus.write8(0xFF13, 0xFF)
+        bus.write8(0xFF14, 0x87)
+
+        self.assertEqual(bus.apu.frequency_timers[0], 6)
+        bus.tick(5)
+        self.assertEqual(bus.apu.duty_positions[0], 0)
+        bus.tick(1)
+        self.assertEqual(bus.apu.duty_positions[0], 1)
+
+        bus.apu.frequency_timers[1] = 7
+        bus.write8(0xFF16, 0x80)
+        bus.write8(0xFF17, 0xF0)
+        bus.write8(0xFF18, 0xFF)
+        bus.write8(0xFF19, 0x87)
+
+        self.assertEqual(bus.apu.frequency_timers[1], 7)
 
     def test_wave_frequency_timer_advances_wave_ram_sample(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
@@ -492,6 +541,24 @@ class APUTests(unittest.TestCase):
         self.assertEqual(bus.apu.wave_position, 2)
         self.assertEqual(bus.apu.frequency_timers[2], 1)
         self.assertEqual(bus.apu.sample_channels()[2], 9)
+
+    def test_wave_frequency_timer_advances_while_volume_muted(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+
+        bus.write8(0xFF30, 0x3C)
+        bus.write8(0xFF31, 0x90)
+        bus.write8(0xFF1A, 0x80)
+        bus.write8(0xFF1C, 0x00)
+        bus.write8(0xFF1D, 0xFF)
+        bus.write8(0xFF1E, 0x87)
+
+        bus.tick(2)
+
+        self.assertEqual(bus.apu.wave_position, 1)
+        self.assertEqual(bus.apu.wave_sample_buffer, 12)
+        self.assertEqual(bus.apu.sample_channels()[2], 0)
 
     def test_wave_trigger_outputs_previous_sample_until_next_wave_read(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
@@ -541,6 +608,49 @@ class APUTests(unittest.TestCase):
 
         self.assertEqual((bus.apu.noise_lfsr >> 14) & 1, 1)
         self.assertEqual((bus.apu.noise_lfsr >> 6) & 1, 1)
+
+    def test_noise_lfsr_clocks_while_volume_zero_but_dac_enabled(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+
+        bus.write8(0xFF21, 0x08)
+        bus.write8(0xFF22, 0x00)
+        bus.write8(0xFF23, 0x80)
+        initial_lfsr = bus.apu.noise_lfsr
+
+        bus.tick(8)
+
+        self.assertEqual(bus.apu.noise_lfsr, initial_lfsr)
+        self.assertEqual(bus.apu._pending_noise_cycles, 8)
+        bus.apu._flush_pending_noise_lfsr_steps()
+        self.assertNotEqual(bus.apu.noise_lfsr, initial_lfsr)
+        self.assertEqual(bus.apu._pending_noise_cycles, 0)
+        self.assertEqual(bus.apu._pending_noise_lfsr_steps, 0)
+        self.assertEqual(bus.apu.sample_channels()[3], 0)
+
+    def test_deferred_zero_volume_noise_matches_eager_lfsr_clocking(self) -> None:
+        deferred = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        deferred.write8(0xFF26, 0x00)
+        deferred.write8(0xFF26, 0x80)
+        deferred.write8(0xFF21, 0x08)
+        deferred.write8(0xFF22, 0x00)
+        deferred.write8(0xFF23, 0x80)
+
+        eager = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        eager.write8(0xFF26, 0x00)
+        eager.write8(0xFF26, 0x80)
+        eager.write8(0xFF21, 0xF0)
+        eager.write8(0xFF22, 0x00)
+        eager.write8(0xFF23, 0x80)
+
+        cycles = 8 * 257 + 3
+        deferred.tick(cycles)
+        eager.tick(cycles)
+        deferred.apu._flush_pending_noise_lfsr_steps()
+
+        self.assertEqual(deferred.apu.noise_lfsr, eager.apu.noise_lfsr)
+        self.assertEqual(deferred.apu.frequency_timers[3], eager.apu.frequency_timers[3])
 
     def test_noise_clock_shift_fourteen_stops_lfsr_clock(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)

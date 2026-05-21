@@ -252,10 +252,16 @@ class TkDisplay:
             self._update_title()
             return
         if command == "reset":
+            restart_audio = self._audio_enabled and self._audio_player is not None
+            if restart_audio:
+                self._stop_audio()
             self.emulator.reset()
             self.emulator.set_buttons(self.pressed)
-            self.emulator.bus.apu.set_sample_rate(self.config.audio_sample_rate)
-            self.emulator.bus.apu.set_output_enabled(self._audio_enabled)
+            if restart_audio:
+                self._start_audio(raise_on_error=False)
+            else:
+                self.emulator.bus.apu.set_sample_rate(self.config.audio_sample_rate)
+                self.emulator.bus.apu.set_output_enabled(self._audio_enabled)
             self._configure_apu_profile()
             self._start_frame = self.emulator.bus.ppu.frame_count
             self._draw_frame()

@@ -358,6 +358,26 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(emulator.bus.apu.sample_rates, [22_050])
         self.assertEqual(emulator.bus.apu.output_enabled_values, [False, True, False])
 
+    def test_tk_display_reset_restarts_live_audio_player(self) -> None:
+        FakeAudioPlayer.instances.clear()
+        emulator = FakeEmulator()
+        display = TkDisplay(
+            emulator,
+            config=DisplayConfig(audio_sample_rate=22_050, audio_buffer_ms=80, audio_chunk_ms=10),
+        )
+        display._root = FakeRoot()
+
+        with patch("display.BufferedAudioPlayer", FakeAudioPlayer):
+            display._on_key_press(FakeEvent("m"))
+            display._on_key_press(FakeEvent("r"))
+
+        first_player, second_player = FakeAudioPlayer.instances
+        self.assertEqual(emulator.reset_count, 1)
+        self.assertTrue(first_player.closed)
+        self.assertFalse(second_player.closed)
+        self.assertEqual(emulator.bus.apu.sample_rates, [22_050, 22_050])
+        self.assertEqual(emulator.bus.apu.output_enabled_values, [False, True, False, True])
+
     def test_tk_display_audio_capture_writes_live_samples_and_closes(self) -> None:
         FakeAudioPlayer.instances.clear()
         FakeCaptureWriter.instances.clear()

@@ -73,6 +73,9 @@ PULSE_DUTY_PATTERNS = (
 )
 
 NOISE_DIVISORS = (8, 16, 32, 48, 64, 80, 96, 112)
+NOISE_LFSR_MASK = 0x7FFF
+NOISE_LFSR_FAST_FORWARD_THRESHOLD = 16
+_NOISE_LFSR_JUMP_POWERS: dict[bool, list[tuple[int, ...]]] = {}
 
 READ_MASKS = {
     0x10: 0x80,
@@ -94,6 +97,60 @@ READ_MASKS = {
 
 class APUBus(Protocol):
     io: bytearray
+
+
+def _clock_noise_lfsr_state(state: int, *, width_mode: bool) -> int:
+    xor_bit = (state & 0x01) ^ ((state >> 1) & 0x01)
+    state = (state >> 1) | (xor_bit << 14)
+    if width_mode:
+        state = (state & ~0x40) | (xor_bit << 6)
+    return state & NOISE_LFSR_MASK
+
+
+def _apply_noise_lfsr_matrix(state: int, matrix: tuple[int, ...]) -> int:
+    result = 0
+    bit = 0
+    while state:
+        if state & 0x01:
+            result ^= matrix[bit]
+        state >>= 1
+        bit += 1
+    return result & NOISE_LFSR_MASK
+
+
+def _noise_lfsr_jump_powers(width_mode: bool, bit_count: int) -> list[tuple[int, ...]]:
+    powers = _NOISE_LFSR_JUMP_POWERS.setdefault(width_mode, [])
+    if not powers:
+        powers.append(
+            tuple(
+                _clock_noise_lfsr_state(1 << bit, width_mode=width_mode)
+                for bit in range(15)
+            )
+        )
+    while len(powers) < bit_count:
+        previous = powers[-1]
+        powers.append(
+            tuple(_apply_noise_lfsr_matrix(value, previous) for value in previous)
+        )
+    return powers
+
+
+def _advance_noise_lfsr_state(state: int, steps: int, *, width_mode: bool) -> int:
+    state &= NOISE_LFSR_MASK
+    if steps <= 0:
+        return state
+    if steps <= NOISE_LFSR_FAST_FORWARD_THRESHOLD:
+        for _ in range(steps):
+            state = _clock_noise_lfsr_state(state, width_mode=width_mode)
+        return state
+    powers = _noise_lfsr_jump_powers(width_mode, steps.bit_length())
+    bit = 0
+    while steps:
+        if steps & 0x01:
+            state = _apply_noise_lfsr_matrix(state, powers[bit])
+        steps >>= 1
+        bit += 1
+    return state
 
 
 @dataclass(frozen=True)
@@ -146,12 +203,15 @@ class APU:
         self._sweep_timer = 0
         self._sweep_enabled = False
         self._sweep_shadow_period = 0
+        self._sweep_pace_latch = 0
         self._sweep_negate_calculated = False
         self.frequency_timers = [0, 0, 0, 0]
         self.duty_positions = [0, 0]
         self.wave_position = 0
         self.wave_sample_buffer = 0
         self.noise_lfsr = 0x7FFF
+        self._pending_noise_cycles = 0
+        self._pending_noise_lfsr_steps = 0
         self.profile_enabled = False
         self._profile_tick_seconds = 0.0
         self._profile_generated_samples = 0
@@ -199,6 +259,8 @@ class APU:
 
         self._profile_register_write()
         old_value = self.bus.io[offset]
+        if offset in {0x21, 0x22}:
+            self._flush_pending_noise_lfsr_steps()
         self.bus.io[offset] = value
         if offset == 0x10:
             self._handle_sweep_register_write(old_value, value)
@@ -246,7 +308,14 @@ class APU:
     def _advance_core(self, cycles: int) -> None:
         if cycles <= 0 or not self.powered:
             return
-        self._tick_frequency_timers(cycles)
+        if self._quiet_frequency_timers_can_skip():
+            if self._channel_output_enabled[3]:
+                self._pending_noise_cycles += cycles
+        elif self._frequency_timers_can_fast_defer():
+            if self._channel_output_enabled[3]:
+                self._pending_noise_cycles += cycles
+        else:
+            self._tick_frequency_timers(cycles)
         self._frame_sequence_counter += cycles
         while self._frame_sequence_counter >= FRAME_SEQUENCER_PERIOD:
             self._frame_sequence_counter -= FRAME_SEQUENCER_PERIOD
@@ -324,6 +393,8 @@ class APU:
                 left += dac_sample
 
         if io[0x21] & 0xF8:
+            if not self._noise_lfsr_can_defer():
+                self._flush_pending_noise_lfsr_steps()
             sample = 0
             if self._channel_output_enabled[3] and not self.noise_lfsr & 0x01:
                 sample = self.channel_volumes[3]
@@ -405,12 +476,15 @@ class APU:
         self._sweep_timer = 0
         self._sweep_enabled = False
         self._sweep_shadow_period = 0
+        self._sweep_pace_latch = 0
         self._sweep_negate_calculated = False
         self.frequency_timers = [0, 0, 0, 0]
         self.duty_positions = [0, 0]
         self.wave_position = 0
         self.wave_sample_buffer = 0
         self.noise_lfsr = 0x7FFF
+        self._pending_noise_cycles = 0
+        self._pending_noise_lfsr_steps = 0
 
     def _trigger_channel(self, channel: int) -> None:
         if self.length_timers[channel] == 0:
@@ -426,11 +500,18 @@ class APU:
         if channel == 0:
             self._restart_sweep()
         reload_cycles = self._frequency_timer_reload(channel)
-        self.frequency_timers[channel] = reload_cycles if reload_cycles is not None else 0
+        if reload_cycles is None:
+            self.frequency_timers[channel] = 0
+        elif channel in {0, 1}:
+            self.frequency_timers[channel] = reload_cycles + (self.frequency_timers[channel] & 0x03)
+        else:
+            self.frequency_timers[channel] = reload_cycles
         if channel == 2:
             self.wave_position = 0
         elif channel == 3:
             self.noise_lfsr = 0x7FFF
+            self._pending_noise_cycles = 0
+            self._pending_noise_lfsr_steps = 0
 
     def _channel_dac_enabled(self, channel: int) -> bool:
         register = DAC_REGISTERS[channel]
@@ -449,6 +530,9 @@ class APU:
             self._profile_channel_disables += 1
         self.channel_active &= ~(1 << channel)
         self._channel_output_enabled[channel] = False
+        if channel == 3:
+            self._pending_noise_cycles = 0
+            self._pending_noise_lfsr_steps = 0
 
     def _profile_register_write(self) -> None:
         if self.profile_enabled:
@@ -591,7 +675,8 @@ class APU:
         self._sweep_negate_calculated = False
         pace = self._sweep_pace()
         shift = self._sweep_shift()
-        self._sweep_timer = pace or 8
+        self._sweep_pace_latch = pace
+        self._sweep_timer = self._sweep_pace_latch or 8
         self._sweep_enabled = pace != 0 or shift != 0
         if shift != 0:
             self._disable_ch1_if_sweep_overflows(self._calculate_sweep_period())
@@ -603,8 +688,9 @@ class APU:
         if self._sweep_timer > 0:
             return
 
-        pace = self._sweep_pace()
-        self._sweep_timer = pace or 8
+        pace = self._sweep_pace_latch
+        self._sweep_pace_latch = self._sweep_pace()
+        self._sweep_timer = self._sweep_pace_latch or 8
         if pace == 0:
             return
         if self._sweep_shift() == 0:
@@ -625,6 +711,13 @@ class APU:
             and not value & 0x08
         ):
             self._disable_channel(0)
+        old_pace = (old_value >> 4) & 0x07
+        new_pace = (value >> 4) & 0x07
+        if new_pace == 0:
+            self._sweep_pace_latch = 0
+        elif old_pace == 0 and self._sweep_enabled:
+            self._sweep_pace_latch = new_pace
+            self._sweep_timer = new_pace
 
     def _sweep_pace(self) -> int:
         return (self.bus.io[0x10] >> 4) & 0x07
@@ -662,15 +755,19 @@ class APU:
         volumes = self.channel_volumes
         timers = self.frequency_timers
         io = self.bus.io
-        if not (
-            (enabled[0] and (volumes[0] > 0 or (self._envelope_enabled[0] and io[0x12] & 0x08)))
-            or (enabled[1] and (volumes[1] > 0 or (self._envelope_enabled[1] and io[0x17] & 0x08)))
-            or (enabled[2] and (io[0x1C] & 0x60))
-            or (enabled[3] and (volumes[3] > 0 or (self._envelope_enabled[3] and io[0x21] & 0x08)))
-        ):
+        clock_ch0 = enabled[0] and (
+            volumes[0] > 0 or (self._envelope_enabled[0] and io[0x12] & 0x08)
+        )
+        clock_ch1 = enabled[1] and (
+            volumes[1] > 0 or (self._envelope_enabled[1] and io[0x17] & 0x08)
+        )
+        clock_ch2 = enabled[2]
+        defer_ch3 = enabled[3] and self._noise_lfsr_can_defer()
+        clock_ch3 = enabled[3] and not defer_ch3
+        if not (clock_ch0 or clock_ch1 or clock_ch2 or clock_ch3 or defer_ch3):
             return
 
-        if enabled[0]:
+        if clock_ch0:
             period = io[0x13] | ((io[0x14] & 0x07) << 8)
             reload_cycles = max(1, (2048 - period) * 4)
             timer = timers[0] - cycles
@@ -679,7 +776,7 @@ class APU:
                 self.duty_positions[0] = (self.duty_positions[0] + 1) & 0x07
             timers[0] = timer
 
-        if enabled[1]:
+        if clock_ch1:
             period = io[0x18] | ((io[0x19] & 0x07) << 8)
             reload_cycles = max(1, (2048 - period) * 4)
             timer = timers[1] - cycles
@@ -688,34 +785,73 @@ class APU:
                 self.duty_positions[1] = (self.duty_positions[1] + 1) & 0x07
             timers[1] = timer
 
-        if enabled[2]:
+        if clock_ch2:
             period = io[0x1D] | ((io[0x1E] & 0x07) << 8)
             reload_cycles = max(1, (2048 - period) * 2)
-            timer = timers[2] - cycles
-            while timer <= 0:
-                timer += reload_cycles
-                self.wave_position = (self.wave_position + 1) & 0x1F
+            timer = timers[2]
+            if cycles >= timer:
+                elapsed_after_first_tick = cycles - timer
+                steps = 1 + elapsed_after_first_tick // reload_cycles
+                timer = reload_cycles - (elapsed_after_first_tick % reload_cycles)
+                self.wave_position = (self.wave_position + steps) & 0x1F
                 sample_byte = io[WAVE_RAM_START + (self.wave_position // 2)]
-                self.wave_sample_buffer = sample_byte & 0x0F if self.wave_position & 1 else sample_byte >> 4
+                self.wave_sample_buffer = (
+                    sample_byte & 0x0F if self.wave_position & 1 else sample_byte >> 4
+                )
+            else:
+                timer -= cycles
             timers[2] = timer
 
-        if enabled[3]:
+        if defer_ch3:
+            self._pending_noise_cycles += cycles
+        elif clock_ch3:
+            self._flush_pending_noise_lfsr_steps()
             value = io[0x22]
             shift = (value >> 4) & 0x0F
             if shift < 14:
                 reload_cycles = max(1, NOISE_DIVISORS[value & 0x07] << shift)
-                timer = timers[3] - cycles
-                noise_lfsr = self.noise_lfsr
+                timer = timers[3]
                 width_mode = value & 0x08
-                while timer <= 0:
-                    timer += reload_cycles
-                    xor_bit = (noise_lfsr & 0x01) ^ ((noise_lfsr >> 1) & 0x01)
-                    noise_lfsr = (noise_lfsr >> 1) | (xor_bit << 14)
-                    if width_mode:
-                        noise_lfsr = (noise_lfsr & ~0x40) | (xor_bit << 6)
-                    noise_lfsr &= 0x7FFF
+                if cycles >= timer:
+                    elapsed_after_first_tick = cycles - timer
+                    steps = 1 + elapsed_after_first_tick // reload_cycles
+                    timer = reload_cycles - (elapsed_after_first_tick % reload_cycles)
+                    self.noise_lfsr = _advance_noise_lfsr_state(
+                        self.noise_lfsr,
+                        steps,
+                        width_mode=bool(width_mode),
+                    )
+                else:
+                    timer -= cycles
                 timers[3] = timer
-                self.noise_lfsr = noise_lfsr
+
+    def _frequency_timers_can_fast_defer(self) -> bool:
+        enabled = self._channel_output_enabled
+        io = self.bus.io
+        if enabled[0] and (
+            self.channel_volumes[0] > 0 or (self._envelope_enabled[0] and io[0x12] & 0x08)
+        ):
+            return False
+        if enabled[1] and (
+            self.channel_volumes[1] > 0 or (self._envelope_enabled[1] and io[0x17] & 0x08)
+        ):
+            return False
+        if enabled[2]:
+            return False
+        if enabled[3] and not self._noise_lfsr_can_defer():
+            return False
+        return True
+
+    def _quiet_frequency_timers_can_skip(self) -> bool:
+        return (
+            not self._channel_output_enabled[2]
+            and self.channel_volumes[0] == 0
+            and self.channel_volumes[1] == 0
+            and self.channel_volumes[3] == 0
+            and not self._envelope_enabled[0]
+            and not self._envelope_enabled[1]
+            and not self._envelope_enabled[3]
+        )
 
     def _frequency_timer_reload(self, channel: int) -> int | None:
         if channel in {0, 1}:
@@ -741,11 +877,47 @@ class APU:
             self._clock_noise_lfsr()
 
     def _clock_noise_lfsr(self) -> None:
-        xor_bit = (self.noise_lfsr & 0x01) ^ ((self.noise_lfsr >> 1) & 0x01)
-        self.noise_lfsr = (self.noise_lfsr >> 1) | (xor_bit << 14)
-        if self.bus.io[0x22] & 0x08:
-            self.noise_lfsr = (self.noise_lfsr & ~0x40) | (xor_bit << 6)
-        self.noise_lfsr &= 0x7FFF
+        self._flush_pending_noise_lfsr_steps()
+        self.noise_lfsr = _clock_noise_lfsr_state(
+            self.noise_lfsr,
+            width_mode=bool(self.bus.io[0x22] & 0x08),
+        )
+
+    def _noise_lfsr_can_defer(self) -> bool:
+        return self._pulse_channel_is_zero_volume(3, self.bus.io[0x21])
+
+    def _flush_pending_noise_cycles(self) -> None:
+        cycles = self._pending_noise_cycles
+        if cycles <= 0:
+            return
+        self._pending_noise_cycles = 0
+        if not self._channel_output_enabled[3]:
+            return
+        value = self.bus.io[0x22]
+        shift = (value >> 4) & 0x0F
+        if shift >= 14:
+            return
+        reload_cycles = max(1, NOISE_DIVISORS[value & 0x07] << shift)
+        timer = self.frequency_timers[3]
+        if cycles >= timer:
+            elapsed_after_first_tick = cycles - timer
+            steps = 1 + elapsed_after_first_tick // reload_cycles
+            timer = reload_cycles - (elapsed_after_first_tick % reload_cycles)
+            self._pending_noise_lfsr_steps += steps
+        else:
+            timer -= cycles
+        self.frequency_timers[3] = timer
+
+    def _flush_pending_noise_lfsr_steps(self) -> None:
+        self._flush_pending_noise_cycles()
+        if self._pending_noise_lfsr_steps <= 0:
+            return
+        self.noise_lfsr = _advance_noise_lfsr_state(
+            self.noise_lfsr,
+            self._pending_noise_lfsr_steps,
+            width_mode=bool(self.bus.io[0x22] & 0x08),
+        )
+        self._pending_noise_lfsr_steps = 0
 
     def _pulse_sample(self, channel: int) -> int:
         if not self._channel_output_enabled[channel]:
@@ -779,6 +951,8 @@ class APU:
             return 0
         if not self._channel_dac_enabled(3):
             return 0
+        if not self._noise_lfsr_can_defer():
+            self._flush_pending_noise_lfsr_steps()
         return self.channel_volumes[3] if not self.noise_lfsr & 0x01 else 0
 
     def _tick_and_sample_output(self, cycles: int) -> None:
