@@ -16,6 +16,15 @@ if TYPE_CHECKING:
 
 DMG_FPS = 4_194_304 / (154 * 456)
 TK_DMG_COLORS = tuple(f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in DMG_GRAYSCALE)
+PPM_DMG_PIXELS = tuple(bytes(rgb) for rgb in DMG_GRAYSCALE)
+PPM_SCREEN_HEADER = f"P6\n{SCREEN_WIDTH} {SCREEN_HEIGHT}\n255\n".encode("ascii")
+PPM_FOUR_PIXEL_CHUNKS = tuple(
+    PPM_DMG_PIXELS[index & 0x03]
+    + PPM_DMG_PIXELS[(index >> 2) & 0x03]
+    + PPM_DMG_PIXELS[(index >> 4) & 0x03]
+    + PPM_DMG_PIXELS[(index >> 6) & 0x03]
+    for index in range(256)
+)
 
 DEFAULT_KEYMAP = {
     "z": "a",
@@ -105,6 +114,35 @@ def framebuffer_to_tk_rows(framebuffer: list[list[int]], scale: int = 1) -> list
 
 def framebuffer_to_tk_image_data(framebuffer: list[list[int]], scale: int = 1) -> str:
     return " ".join(framebuffer_to_tk_rows(framebuffer, scale))
+
+
+def framebuffer_to_tk_ppm_data(framebuffer: list[list[int]]) -> bytes:
+    height = len(framebuffer)
+    width = len(framebuffer[0]) if height else 0
+    header = (
+        PPM_SCREEN_HEADER
+        if width == SCREEN_WIDTH and height == SCREEN_HEIGHT
+        else f"P6\n{width} {height}\n255\n".encode("ascii")
+    )
+    data = bytearray(header)
+    pixels = PPM_DMG_PIXELS
+    chunks = PPM_FOUR_PIXEL_CHUNKS
+    for row in framebuffer:
+        x = 0
+        row_width = len(row)
+        while x + 3 < row_width:
+            chunk_index = (
+                (row[x] & 0x03)
+                | ((row[x + 1] & 0x03) << 2)
+                | ((row[x + 2] & 0x03) << 4)
+                | ((row[x + 3] & 0x03) << 6)
+            )
+            data.extend(chunks[chunk_index])
+            x += 4
+        while x < row_width:
+            data.extend(pixels[row[x] & 0x03])
+            x += 1
+    return bytes(data)
 
 
 class TkDisplay:
@@ -228,6 +266,9 @@ class TkDisplay:
 
     def _schedule_next_frame(self, delay_ms: int) -> None:
         assert self._root is not None
+        if delay_ms <= 0 and hasattr(self._root, "after_idle"):
+            self._root.after_idle(self._run_frame)
+            return
         self._root.after(delay_ms, self._run_frame)
 
     def _run_frame(self) -> None:
@@ -267,15 +308,19 @@ class TkDisplay:
                 elapsed,
             )
         target = 1.0 / self.config.fps
-        self._schedule_next_frame(max(1, int((target - elapsed) * 1000)))
+        remaining_ms = int((target - elapsed) * 1000)
+        self._schedule_next_frame(max(1, remaining_ms) if remaining_ms > 0 else 0)
 
     def _draw_frame(self) -> None:
         if self._image is None or self._label is None:
             return
         source_image = self._source_image or self._image
-        source_image.put(
-            framebuffer_to_tk_image_data(self.emulator.bus.ppu.framebuffer),
-            to=(0, 0),
+        source_image.tk.call(
+            source_image,
+            "put",
+            framebuffer_to_tk_ppm_data(self.emulator.bus.ppu.framebuffer),
+            "-format",
+            "PPM",
         )
         if self.config.scale > 1 and source_image is not self._image:
             self._image.tk.call(

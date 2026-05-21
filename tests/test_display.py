@@ -12,6 +12,7 @@ from display import (
     buttons_for_keys,
     display_command_for_key,
     framebuffer_to_tk_image_data,
+    framebuffer_to_tk_ppm_data,
     framebuffer_to_tk_rows,
 )
 
@@ -25,9 +26,13 @@ class FakeRoot:
     def __init__(self) -> None:
         self.title_text = ""
         self.scheduled_delays: list[int] = []
+        self.idle_callbacks = 0
 
     def after(self, delay_ms: int, callback) -> None:
         self.scheduled_delays.append(delay_ms)
+
+    def after_idle(self, callback) -> None:
+        self.idle_callbacks += 1
 
     def title(self, text: str) -> None:
         self.title_text = text
@@ -200,6 +205,16 @@ class DisplayTests(unittest.TestCase):
             "{#aaaaaa #aaaaaa #555555 #555555}",
         )
 
+    def test_framebuffer_ppm_data_uses_binary_dmg_pixels(self) -> None:
+        data = framebuffer_to_tk_ppm_data([[0, 3], [1, 2]])
+
+        self.assertEqual(
+            data,
+            b"P6\n2 2\n255\n"
+            b"\xff\xff\xff\x00\x00\x00"
+            b"\xaa\xaa\xaa\x55\x55\x55",
+        )
+
     def test_display_config_validation(self) -> None:
         self.assertEqual(DisplayConfig(scale=2).scale, 2)
 
@@ -228,11 +243,17 @@ class DisplayTests(unittest.TestCase):
 
         display._draw_frame()
 
-        self.assertEqual(len(image.put_calls), 1)
-        self.assertEqual(image.put_calls[0][1], (0, 0))
+        self.assertEqual(image.put_calls, [])
+        self.assertEqual(len(image.copy_calls), 1)
         self.assertEqual(
-            image.put_calls[0][0],
-            framebuffer_to_tk_image_data(emulator.bus.ppu.framebuffer),
+            image.copy_calls[0],
+            (
+                image,
+                "put",
+                framebuffer_to_tk_ppm_data(emulator.bus.ppu.framebuffer),
+                "-format",
+                "PPM",
+            ),
         )
 
     def test_tk_display_scaled_draw_uploads_source_and_native_zooms(self) -> None:
@@ -247,16 +268,33 @@ class DisplayTests(unittest.TestCase):
 
         display._draw_frame()
 
-        self.assertEqual(len(source_image.put_calls), 1)
+        self.assertEqual(source_image.put_calls, [])
+        self.assertEqual(len(source_image.copy_calls), 1)
         self.assertEqual(
-            source_image.put_calls[0][0],
-            framebuffer_to_tk_image_data(emulator.bus.ppu.framebuffer),
+            source_image.copy_calls[0],
+            (
+                source_image,
+                "put",
+                framebuffer_to_tk_ppm_data(emulator.bus.ppu.framebuffer),
+                "-format",
+                "PPM",
+            ),
         )
         self.assertEqual(scaled_image.put_calls, [])
         self.assertEqual(
             scaled_image.copy_calls,
             [(scaled_image, "copy", source_image, "-zoom", 2, 2)],
         )
+
+    def test_tk_display_uses_idle_schedule_when_behind(self) -> None:
+        display = TkDisplay(FakeEmulator(), config=DisplayConfig())
+        root = FakeRoot()
+        display._root = root
+
+        display._schedule_next_frame(0)
+
+        self.assertEqual(root.idle_callbacks, 1)
+        self.assertEqual(root.scheduled_delays, [])
 
     def test_tk_display_trace_command_toggles_run_tracing(self) -> None:
         emulator = FakeEmulator()
