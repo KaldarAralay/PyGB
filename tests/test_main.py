@@ -146,7 +146,7 @@ class MainLoopTests(unittest.TestCase):
 
         emulator.run(max_instructions=3, audio_sink=samples.extend)
 
-        self.assertEqual(samples, [(0, 0), (0, 0), (0, 0)])
+        self.assertEqual(samples, [(120, 120), (120, 120), (120, 120)])
         self.assertEqual(emulator.drain_audio_samples(), [])
         self.assertFalse(emulator.bus.apu.output_enabled)
 

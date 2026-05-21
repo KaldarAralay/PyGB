@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from apu import CPU_CLOCK_HZ, FRAME_SEQUENCER_PERIOD
+from apu import AUDIO_OVERSAMPLE_FACTOR, CPU_CLOCK_HZ, FRAME_SEQUENCER_PERIOD
 from bus import Bus
 from cartridge import Cartridge, compute_header_checksum
 
@@ -43,13 +43,13 @@ class APUTests(unittest.TestCase):
         self.assertEqual(bus.read8(0xFF26), 0xF0)
         self.assertEqual(bus.read8(0xFF12), 0xF3)
 
-    def test_post_boot_channel_status_does_not_output_until_triggered(self) -> None:
+    def test_post_boot_inactive_generation_still_has_dac_bias(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
 
         self.assertEqual(bus.read8(0xFF26), 0xF1)
         self.assertEqual(bus.apu.sample_channels(), (0, 0, 0, 0))
-        self.assertEqual(bus.apu.dac_sample_channels(), (0, 0, 0, 0))
-        self.assertEqual(bus.apu.mix_sample(), (0, 0))
+        self.assertEqual(bus.apu.dac_sample_channels(), (15, 0, 0, 0))
+        self.assertEqual(bus.apu.mix_sample(), (120, 120))
 
     def test_unused_audio_registers_read_as_ff_and_ignore_writes(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
@@ -569,7 +569,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF24, 0x77)
         bus.write8(0xFF25, 0x11)
 
-        self.assertEqual(bus.apu.mix_sample(), (120, 120))
+        self.assertEqual(bus.apu.mix_sample(), (-120, -120))
 
     def test_mix_sample_uses_signed_dac_for_active_low_waveform(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
@@ -584,18 +584,20 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF25, 0x11)
 
         self.assertEqual(bus.apu.sample_channels()[0], 0)
-        self.assertEqual(bus.apu.dac_sample_channels()[0], -15)
-        self.assertEqual(bus.apu.mix_sample(), (-120, -120))
+        self.assertEqual(bus.apu.dac_sample_channels()[0], 15)
+        self.assertEqual(bus.apu.mix_sample(), (120, 120))
 
-    def test_mix_sample_does_not_add_dac_offset_for_inactive_channels(self) -> None:
+    def test_mix_sample_includes_inactive_channel_dac_bias(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
+        bus.write8(0xFF12, 0x08)
         bus.write8(0xFF24, 0x77)
-        bus.write8(0xFF25, 0xFF)
+        bus.write8(0xFF25, 0x11)
 
-        self.assertEqual(bus.apu.dac_sample_channels(), (0, 0, 0, 0))
-        self.assertEqual(bus.apu.mix_sample(), (0, 0))
+        self.assertEqual(bus.apu.sample_channels()[0], 0)
+        self.assertEqual(bus.apu.dac_sample_channels(), (15, 0, 0, 0))
+        self.assertEqual(bus.apu.mix_sample(), (120, 120))
 
     def test_mix_sample_routes_panning_and_volume_independently(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
@@ -613,7 +615,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF24, 0x70)
         bus.write8(0xFF25, 0x21)
 
-        self.assertEqual(bus.apu.mix_sample(), (104, 15))
+        self.assertEqual(bus.apu.mix_sample(), (-104, -15))
 
     def test_output_sample_high_pass_filter_reduces_constant_dc(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
@@ -632,10 +634,27 @@ class APUTests(unittest.TestCase):
         for _ in range(5000):
             last = bus.apu.output_sample()
 
-        self.assertEqual(bus.apu.mix_sample(), (120, 120))
-        self.assertEqual(first, (120, 120))
+        self.assertEqual(bus.apu.mix_sample(), (-120, -120))
+        self.assertEqual(first, (-120, -120))
         self.assertLess(abs(last[0]), abs(first[0]))
         self.assertEqual(last[0], last[1])
+
+    def test_output_sample_is_zero_when_all_dacs_are_off(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+
+        bus.write8(0xFF11, 0x80)
+        bus.write8(0xFF12, 0xF0)
+        bus.write8(0xFF13, 0xFF)
+        bus.write8(0xFF14, 0x87)
+        bus.write8(0xFF24, 0x77)
+        bus.write8(0xFF25, 0x11)
+        self.assertEqual(bus.apu.output_sample(), (-120, -120))
+
+        bus.write8(0xFF12, 0x00)
+
+        self.assertEqual(bus.apu.output_sample(), (0, 0))
 
     def test_set_sample_rate_resets_high_pass_filter_state(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
@@ -653,11 +672,28 @@ class APUTests(unittest.TestCase):
 
         bus.apu.set_sample_rate(4)
 
-        self.assertEqual(bus.apu.output_sample(), (120, 120))
+        self.assertEqual(bus.apu.output_sample(), (-120, -120))
+
+    def test_audio_resampler_averages_subsamples_before_filtering(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+        bus.write8(0xFF12, 0x08)
+
+        for _ in range(AUDIO_OVERSAMPLE_FACTOR - 1):
+            bus.apu._queue_resampler_sample((120, 0))
+        self.assertEqual(bus.apu.drain_audio_samples(), [])
+
+        bus.apu._queue_resampler_sample((-120, 0))
+
+        expected_left = int(round((120 * (AUDIO_OVERSAMPLE_FACTOR - 1) - 120) / AUDIO_OVERSAMPLE_FACTOR))
+        self.assertEqual(bus.apu.drain_audio_samples(), [(expected_left, 0)])
 
     def test_audio_sample_buffer_uses_configured_sample_rate(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.apu.set_sample_rate(4)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
         bus.apu.set_output_enabled(True)
 
         bus.apu.tick(CPU_CLOCK_HZ // 4 - 1)

@@ -11,6 +11,7 @@ FRAME_SEQUENCER_PERIOD = 8192
 DEFAULT_SAMPLE_RATE = 44_100
 DEFAULT_AUDIO_BUFFER_LIMIT = DEFAULT_SAMPLE_RATE
 DMG_HIGH_PASS_CHARGE_FACTOR = 0.999958
+AUDIO_OVERSAMPLE_FACTOR = 2
 
 NR52 = 0x26
 NR50 = 0x24
@@ -128,7 +129,10 @@ class APU:
         self._audio_samples: deque[tuple[int, int]] = deque()
         self._dropped_audio_samples = 0
         self.output_enabled = False
+        self._high_pass_charge_factor = self._high_pass_charge_factor_for_sample_rate()
         self._high_pass_capacitors = [0.0, 0.0]
+        self._resample_accumulators = [0, 0]
+        self._resample_sample_count = 0
         self.channel_active = self.bus.io[NR52] & 0x0F
         self._channel_output_enabled = [False, False, False, False]
         self.length_timers = [0, 0, 0, 0]
@@ -236,17 +240,19 @@ class APU:
     def _tick(self, cycles: int) -> None:
         if cycles <= 0:
             return
-        if not self.powered:
-            if self.output_enabled:
-                self._collect_output_samples(cycles)
+        if self.output_enabled:
+            self._tick_and_sample_output(cycles)
+            return
+        self._advance_core(cycles)
+
+    def _advance_core(self, cycles: int) -> None:
+        if cycles <= 0 or not self.powered:
             return
         self._tick_frequency_timers(cycles)
         self._frame_sequence_counter += cycles
         while self._frame_sequence_counter >= FRAME_SEQUENCER_PERIOD:
             self._frame_sequence_counter -= FRAME_SEQUENCER_PERIOD
             self._advance_frame_sequence()
-        if self.output_enabled:
-            self._collect_output_samples(cycles)
 
     def sample_channels(self) -> tuple[int, int, int, int]:
         if not self.powered:
@@ -269,27 +275,63 @@ class APU:
     def mix_sample(self) -> tuple[int, int]:
         if not self.powered:
             return (0, 0)
-        nr50 = self.bus.io[NR50]
-        nr51 = self.bus.io[NR51]
+        return self._mix_sample_from_dacs()
+
+    def _mix_sample_from_dacs(self) -> tuple[int, int]:
+        io = self.bus.io
+        nr50 = io[NR50]
+        nr51 = io[NR51]
         left_volume = ((nr50 >> 4) & 0x07) + 1
         right_volume = (nr50 & 0x07) + 1
         left = 0
         right = 0
 
-        samples = (
-            self._pulse_sample(0),
-            self._pulse_sample(1),
-            self._wave_sample(),
-            self._noise_sample(),
-        )
-        for channel, sample in enumerate(samples):
-            if not self._channel_output_enabled[channel] or not self._channel_dac_enabled(channel):
-                continue
-            dac_sample = (sample & 0x0F) * 2 - 15
-            if nr51 & (1 << channel):
+        if io[0x12] & 0xF8:
+            sample = 0
+            if self._channel_output_enabled[0]:
+                duty = (io[0x11] >> 6) & 0x03
+                if PULSE_DUTY_PATTERNS[duty][self.duty_positions[0]]:
+                    sample = self.channel_volumes[0]
+            dac_sample = 15 - sample * 2
+            if nr51 & 0x01:
                 right += dac_sample
-            if nr51 & (1 << (channel + 4)):
+            if nr51 & 0x10:
                 left += dac_sample
+
+        if io[0x17] & 0xF8:
+            sample = 0
+            if self._channel_output_enabled[1]:
+                duty = (io[0x16] >> 6) & 0x03
+                if PULSE_DUTY_PATTERNS[duty][self.duty_positions[1]]:
+                    sample = self.channel_volumes[1]
+            dac_sample = 15 - sample * 2
+            if nr51 & 0x02:
+                right += dac_sample
+            if nr51 & 0x20:
+                left += dac_sample
+
+        if io[0x1A] & 0x80:
+            sample = 0
+            if self._channel_output_enabled[2]:
+                volume_code = (io[0x1C] >> 5) & 0x03
+                if volume_code != 0:
+                    sample = self.wave_sample_buffer >> (volume_code - 1)
+            dac_sample = 15 - sample * 2
+            if nr51 & 0x04:
+                right += dac_sample
+            if nr51 & 0x40:
+                left += dac_sample
+
+        if io[0x21] & 0xF8:
+            sample = 0
+            if self._channel_output_enabled[3] and not self.noise_lfsr & 0x01:
+                sample = self.channel_volumes[3]
+            dac_sample = 15 - sample * 2
+            if nr51 & 0x08:
+                right += dac_sample
+            if nr51 & 0x80:
+                left += dac_sample
+
         return left * left_volume, right * right_volume
 
     def output_sample(self) -> tuple[int, int]:
@@ -304,9 +346,11 @@ class APU:
         if sample_rate <= 0:
             raise ValueError("APU sample rate must be positive")
         self.sample_rate = sample_rate
+        self._high_pass_charge_factor = self._high_pass_charge_factor_for_sample_rate()
         self._sample_cycle_accumulator = 0
         self._audio_samples.clear()
         self._dropped_audio_samples = 0
+        self._reset_resampler()
         self._reset_high_pass_filter()
 
     def set_output_enabled(self, enabled: bool) -> None:
@@ -316,6 +360,7 @@ class APU:
         self._sample_cycle_accumulator = 0
         self._audio_samples.clear()
         self._dropped_audio_samples = 0
+        self._reset_resampler()
         self._reset_high_pass_filter()
 
     def on_div_write(self, *, div_apu_falling_edge: bool) -> None:
@@ -346,6 +391,7 @@ class APU:
         self.length_enabled = [False, False, False, False]
         self.channel_volumes = [0, 0, 0, 0]
         self._channel_output_enabled = [False, False, False, False]
+        self._reset_resampler()
         self._reset_high_pass_filter()
         self._envelope_timers = [0, 0, 0, 0]
         self._envelope_enabled = [False, False, False, False]
@@ -409,22 +455,33 @@ class APU:
             self._profile_channel_triggers += 1
 
     def _dac_output(self, channel: int, sample: int) -> int:
-        if not self._channel_output_enabled[channel]:
-            return 0
         if not self._channel_dac_enabled(channel):
             return 0
-        return (sample & 0x0F) * 2 - 15
+        return 15 - (sample & 0x0F) * 2
 
     def _high_pass_filter_sample(self, sample: tuple[int, int]) -> tuple[int, int]:
+        if not self._any_channel_dac_enabled():
+            return (0, 0)
         left, right = sample
         left_output = float(left) - self._high_pass_capacitors[0]
         right_output = float(right) - self._high_pass_capacitors[1]
-        self._high_pass_capacitors[0] = float(left) - left_output * DMG_HIGH_PASS_CHARGE_FACTOR
-        self._high_pass_capacitors[1] = float(right) - right_output * DMG_HIGH_PASS_CHARGE_FACTOR
+        self._high_pass_capacitors[0] = float(left) - left_output * self._high_pass_charge_factor
+        self._high_pass_capacitors[1] = float(right) - right_output * self._high_pass_charge_factor
         return int(round(left_output)), int(round(right_output))
 
     def _reset_high_pass_filter(self) -> None:
         self._high_pass_capacitors = [0.0, 0.0]
+
+    def _reset_resampler(self) -> None:
+        self._resample_accumulators = [0, 0]
+        self._resample_sample_count = 0
+
+    def _high_pass_charge_factor_for_sample_rate(self) -> float:
+        return DMG_HIGH_PASS_CHARGE_FACTOR ** (CPU_CLOCK_HZ / self.sample_rate)
+
+    def _any_channel_dac_enabled(self) -> bool:
+        io = self.bus.io
+        return bool(((io[0x12] | io[0x17] | io[0x21]) & 0xF8) or (io[0x1A] & 0x80))
 
     def _wave_channel_active(self) -> bool:
         return self.powered and bool(self._channel_output_enabled[2])
@@ -696,15 +753,40 @@ class APU:
             return 0
         return self.channel_volumes[3] if not self.noise_lfsr & 0x01 else 0
 
-    def _collect_output_samples(self, cycles: int) -> None:
-        self._sample_cycle_accumulator += cycles * self.sample_rate
-        while self._sample_cycle_accumulator >= CPU_CLOCK_HZ:
-            self._sample_cycle_accumulator -= CPU_CLOCK_HZ
-            if len(self._audio_samples) >= self._audio_buffer_limit:
-                self._audio_samples.popleft()
-                self._dropped_audio_samples += 1
-                if self.profile_enabled:
-                    self._profile_dropped_samples += 1
-            self._audio_samples.append(self.output_sample())
+    def _tick_and_sample_output(self, cycles: int) -> None:
+        subsample_rate = self.sample_rate * AUDIO_OVERSAMPLE_FACTOR
+        remaining_cycles = cycles
+        while remaining_cycles > 0:
+            scaled_cycles_needed = CPU_CLOCK_HZ - self._sample_cycle_accumulator
+            cycles_to_subsample = (scaled_cycles_needed + subsample_rate - 1) // subsample_rate
+            step_cycles = min(remaining_cycles, max(1, cycles_to_subsample))
+            self._advance_core(step_cycles)
+            self._sample_cycle_accumulator += step_cycles * subsample_rate
+            remaining_cycles -= step_cycles
+            while self._sample_cycle_accumulator >= CPU_CLOCK_HZ:
+                self._sample_cycle_accumulator -= CPU_CLOCK_HZ
+                self._queue_resampler_sample(self.mix_sample())
+
+    def _queue_resampler_sample(self, sample: tuple[int, int]) -> None:
+        self._resample_accumulators[0] += sample[0]
+        self._resample_accumulators[1] += sample[1]
+        self._resample_sample_count += 1
+        if self._resample_sample_count < AUDIO_OVERSAMPLE_FACTOR:
+            return
+        divisor = self._resample_sample_count
+        averaged_sample = (
+            int(round(self._resample_accumulators[0] / divisor)),
+            int(round(self._resample_accumulators[1] / divisor)),
+        )
+        self._reset_resampler()
+        self._append_audio_sample(self._high_pass_filter_sample(averaged_sample))
+
+    def _append_audio_sample(self, sample: tuple[int, int]) -> None:
+        if len(self._audio_samples) >= self._audio_buffer_limit:
+            self._audio_samples.popleft()
+            self._dropped_audio_samples += 1
             if self.profile_enabled:
-                self._profile_generated_samples += 1
+                self._profile_dropped_samples += 1
+        self._audio_samples.append(sample)
+        if self.profile_enabled:
+            self._profile_generated_samples += 1
