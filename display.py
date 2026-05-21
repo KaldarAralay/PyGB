@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from apu import DEFAULT_SAMPLE_RATE
-from audio import AudioPlaybackStats, BufferedAudioPlayer
+from audio import AudioPlaybackStats, BufferedAudioPlayer, WavAudioWriter
 from joypad import BUTTON_BITS
 from ppu import DMG_GRAYSCALE, SCREEN_HEIGHT, SCREEN_WIDTH
 
@@ -50,6 +51,7 @@ class DisplayConfig:
     audio_sample_rate: int = DEFAULT_SAMPLE_RATE
     audio_buffer_ms: int = 100
     audio_chunk_ms: int = 20
+    audio_capture_path: Path | None = None
 
     def __post_init__(self) -> None:
         if self.scale < 1:
@@ -137,9 +139,18 @@ class TkDisplay:
         self._profile_audio_seconds = 0.0
         self._profile_apu_seconds = 0.0
         self._profile_apu_samples = 0
+        self._profile_apu_min_samples: int | None = None
+        self._profile_apu_max_samples = 0
+        self._profile_apu_register_writes = 0
+        self._profile_apu_triggers = 0
+        self._profile_apu_channel_disables = 0
+        self._profile_apu_dropped_samples = 0
+        self._profile_min_audio_queue_ms: float | None = None
+        self._profile_max_audio_queue_ms = 0.0
         self._profile_total_seconds = 0.0
         self._profile_audio_stats: AudioPlaybackStats | None = None
         self._profile_report_started = time.perf_counter()
+        self._audio_capture: WavAudioWriter | None = None
         self.emulator.set_buttons(self.pressed)
         self.emulator.bus.apu.set_output_enabled(self._audio_enabled)
         self._configure_apu_profile()
@@ -237,7 +248,7 @@ class TkDisplay:
                 trace_sink=self._trace_sink,
             )
             run_elapsed = time.perf_counter() - run_started
-            apu_elapsed, apu_samples = self._consume_apu_profile()
+            apu_profile = self._consume_apu_profile()
             audio_started = time.perf_counter()
             self._write_audio()
             audio_elapsed = time.perf_counter() - audio_started
@@ -245,16 +256,14 @@ class TkDisplay:
             self._draw_frame()
             draw_elapsed = time.perf_counter() - draw_started
         else:
-            apu_elapsed = 0.0
-            apu_samples = 0
+            apu_profile = None
         elapsed = time.perf_counter() - started
         if not self._paused:
             self._record_profile_frame(
                 run_elapsed,
                 draw_elapsed,
                 audio_elapsed,
-                apu_elapsed,
-                apu_samples,
+                apu_profile,
                 elapsed,
             )
         target = 1.0 / self.config.fps
@@ -283,8 +292,7 @@ class TkDisplay:
         run_seconds: float,
         draw_seconds: float,
         audio_seconds: float,
-        apu_seconds: float,
-        apu_samples: int,
+        apu_profile,
         total_seconds: float,
     ) -> None:
         if not self.config.profile_window:
@@ -293,17 +301,41 @@ class TkDisplay:
         self._profile_run_seconds += run_seconds
         self._profile_draw_seconds += draw_seconds
         self._profile_audio_seconds += audio_seconds
-        self._profile_apu_seconds += apu_seconds
-        self._profile_apu_samples += apu_samples
+        if apu_profile is not None:
+            self._profile_apu_seconds += apu_profile.tick_seconds
+            self._profile_apu_samples += apu_profile.generated_samples
+            self._profile_apu_min_samples = (
+                apu_profile.generated_samples
+                if self._profile_apu_min_samples is None
+                else min(self._profile_apu_min_samples, apu_profile.generated_samples)
+            )
+            self._profile_apu_max_samples = max(
+                self._profile_apu_max_samples,
+                apu_profile.generated_samples,
+            )
+            self._profile_apu_register_writes += apu_profile.register_writes
+            self._profile_apu_triggers += apu_profile.channel_triggers
+            self._profile_apu_channel_disables += apu_profile.channel_disables
+            self._profile_apu_dropped_samples += apu_profile.dropped_samples
         self._profile_total_seconds += total_seconds
         if self._audio_player is not None:
             self._profile_audio_stats = self._audio_player.stats()
+            self._profile_min_audio_queue_ms = (
+                self._profile_audio_stats.queued_ms
+                if self._profile_min_audio_queue_ms is None
+                else min(self._profile_min_audio_queue_ms, self._profile_audio_stats.queued_ms)
+            )
+            self._profile_max_audio_queue_ms = max(
+                self._profile_max_audio_queue_ms,
+                self._profile_audio_stats.queued_ms,
+            )
         if self._profile_frames < self.config.profile_interval:
             return
 
         now = time.perf_counter()
         wall_seconds = now - self._profile_report_started
         frames = self._profile_frames
+        apu_min_samples = self._profile_apu_min_samples or 0
         parts = [
             "window-profile",
             f"frames={frames}",
@@ -312,6 +344,12 @@ class TkDisplay:
             f"audio_ms={self._profile_audio_seconds / frames * 1000:.2f}",
             f"apu_ms={self._profile_apu_seconds / frames * 1000:.2f}",
             f"apu_samples={self._profile_apu_samples}",
+            f"apu_frame_samples={apu_min_samples}-{self._profile_apu_max_samples}",
+            f"apu_audio_ms={self._profile_apu_samples / self.config.audio_sample_rate * 1000:.1f}",
+            f"apu_reg_writes={self._profile_apu_register_writes}",
+            f"apu_triggers={self._profile_apu_triggers}",
+            f"apu_disables={self._profile_apu_channel_disables}",
+            f"apu_dropped_samples={self._profile_apu_dropped_samples}",
             f"active_ms={self._profile_total_seconds / frames * 1000:.2f}",
             f"wall_fps={frames / wall_seconds if wall_seconds > 0 else 0.0:.2f}",
         ]
@@ -319,7 +357,9 @@ class TkDisplay:
             parts.extend(
                 [
                     f"audio_queue_ms={self._profile_audio_stats.queued_ms:.1f}",
+                    f"audio_queue_range_ms={(self._profile_min_audio_queue_ms or 0.0):.1f}-{self._profile_max_audio_queue_ms:.1f}",
                     f"audio_underruns={self._profile_audio_stats.underruns}",
+                    f"audio_low_buffer_events={self._profile_audio_stats.low_buffer_events}",
                     f"audio_dropped={self._profile_audio_stats.dropped_frames}",
                 ]
             )
@@ -333,6 +373,14 @@ class TkDisplay:
         self._profile_audio_seconds = 0.0
         self._profile_apu_seconds = 0.0
         self._profile_apu_samples = 0
+        self._profile_apu_min_samples = None
+        self._profile_apu_max_samples = 0
+        self._profile_apu_register_writes = 0
+        self._profile_apu_triggers = 0
+        self._profile_apu_channel_disables = 0
+        self._profile_apu_dropped_samples = 0
+        self._profile_min_audio_queue_ms = None
+        self._profile_max_audio_queue_ms = 0.0
         self._profile_total_seconds = 0.0
         self._profile_audio_stats = None
         self._profile_report_started = now
@@ -345,6 +393,7 @@ class TkDisplay:
     def _stop(self) -> None:
         self._running = False
         self._stop_audio()
+        self._close_audio_capture()
         if self._root is not None:
             self._root.destroy()
 
@@ -380,6 +429,7 @@ class TkDisplay:
                 chunk_ms=self.config.audio_chunk_ms,
             )
             self._audio_player.start()
+            self._open_audio_capture()
         except (RuntimeError, ValueError) as exc:
             self._audio_enabled = False
             self.emulator.bus.apu.set_output_enabled(False)
@@ -398,19 +448,36 @@ class TkDisplay:
     def _write_audio(self) -> None:
         if self._audio_player is None:
             return
-        self._audio_player.write(self.emulator.drain_audio_samples())
+        samples = self.emulator.drain_audio_samples()
+        if self._audio_capture is not None:
+            self._audio_capture.write(samples)
+        self._audio_player.write(samples)
 
     def _configure_apu_profile(self) -> None:
         if hasattr(self.emulator.bus.apu, "profile_enabled"):
             self.emulator.bus.apu.profile_enabled = self.config.profile_window
 
-    def _consume_apu_profile(self) -> tuple[float, int]:
+    def _consume_apu_profile(self):
         if not self.config.profile_window:
-            return 0.0, 0
+            return None
         consume_profile = getattr(self.emulator.bus.apu, "consume_profile", None)
         if consume_profile is None:
-            return 0.0, 0
+            return None
         return consume_profile()
+
+    def _open_audio_capture(self) -> None:
+        if self.config.audio_capture_path is None or self._audio_capture is not None:
+            return
+        self._audio_capture = WavAudioWriter(
+            self.config.audio_capture_path,
+            sample_rate=self.config.audio_sample_rate,
+        )
+
+    def _close_audio_capture(self) -> None:
+        if self._audio_capture is None:
+            return
+        self._audio_capture.close()
+        self._audio_capture = None
 
 
 def run_tk_display(

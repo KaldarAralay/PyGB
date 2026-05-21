@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Protocol
 
 
 CPU_CLOCK_HZ = 4_194_304
 FRAME_SEQUENCER_PERIOD = 8192
 DEFAULT_SAMPLE_RATE = 44_100
-DEFAULT_AUDIO_BUFFER_LIMIT = 8192
+DEFAULT_AUDIO_BUFFER_LIMIT = DEFAULT_SAMPLE_RATE
 DMG_HIGH_PASS_CHARGE_FACTOR = 0.999958
 
 NR52 = 0x26
@@ -95,6 +96,17 @@ class APUBus(Protocol):
     io: bytearray
 
 
+@dataclass(frozen=True)
+class APUProfileStats:
+    tick_seconds: float
+    generated_samples: int
+    dropped_samples: int
+    register_writes: int
+    trigger_writes: int
+    channel_triggers: int
+    channel_disables: int
+
+
 class APU:
     def __init__(
         self,
@@ -110,7 +122,11 @@ class APU:
         self._frame_sequence_counter = 0
         self.sample_rate = sample_rate
         self._sample_cycle_accumulator = 0
-        self._audio_samples: deque[tuple[int, int]] = deque(maxlen=audio_buffer_limit)
+        if audio_buffer_limit <= 0:
+            raise ValueError("APU audio buffer limit must be positive")
+        self._audio_buffer_limit = audio_buffer_limit
+        self._audio_samples: deque[tuple[int, int]] = deque()
+        self._dropped_audio_samples = 0
         self.output_enabled = False
         self._high_pass_capacitors = [0.0, 0.0]
         self.channel_active = self.bus.io[NR52] & 0x0F
@@ -132,6 +148,11 @@ class APU:
         self.profile_enabled = False
         self._profile_tick_seconds = 0.0
         self._profile_generated_samples = 0
+        self._profile_dropped_samples = 0
+        self._profile_register_writes = 0
+        self._profile_trigger_writes = 0
+        self._profile_channel_triggers = 0
+        self._profile_channel_disables = 0
 
     @property
     def powered(self) -> bool:
@@ -153,11 +174,13 @@ class APU:
         offset &= 0x7F
         value &= 0xFF
         if offset == NR52:
+            self._profile_register_write()
             self._write_nr52(value)
             return
         if WAVE_RAM_START <= offset <= WAVE_RAM_END:
             if self._wave_channel_active():
                 return
+            self._profile_register_write()
             self.bus.io[offset] = value
             return
         if offset in UNUSED_AUDIO_REGISTERS:
@@ -165,6 +188,7 @@ class APU:
         if not self.powered:
             return
 
+        self._profile_register_write()
         old_value = self.bus.io[offset]
         self.bus.io[offset] = value
         if offset == 0x10:
@@ -172,6 +196,7 @@ class APU:
         if offset in LENGTH_REGISTERS:
             self._write_length_register(LENGTH_REGISTERS[offset], value)
         if offset in TRIGGER_REGISTERS:
+            self._profile_trigger_write(value)
             channel = TRIGGER_REGISTERS[offset]
             self._write_trigger_register(channel, value)
             if value & 0x80:
@@ -189,12 +214,24 @@ class APU:
         finally:
             self._profile_tick_seconds += time.perf_counter() - started
 
-    def consume_profile(self) -> tuple[float, int]:
-        tick_seconds = self._profile_tick_seconds
-        generated_samples = self._profile_generated_samples
+    def consume_profile(self) -> APUProfileStats:
+        stats = APUProfileStats(
+            tick_seconds=self._profile_tick_seconds,
+            generated_samples=self._profile_generated_samples,
+            dropped_samples=self._profile_dropped_samples,
+            register_writes=self._profile_register_writes,
+            trigger_writes=self._profile_trigger_writes,
+            channel_triggers=self._profile_channel_triggers,
+            channel_disables=self._profile_channel_disables,
+        )
         self._profile_tick_seconds = 0.0
         self._profile_generated_samples = 0
-        return tick_seconds, generated_samples
+        self._profile_dropped_samples = 0
+        self._profile_register_writes = 0
+        self._profile_trigger_writes = 0
+        self._profile_channel_triggers = 0
+        self._profile_channel_disables = 0
+        return stats
 
     def _tick(self, cycles: int) -> None:
         if cycles <= 0:
@@ -269,6 +306,7 @@ class APU:
         self.sample_rate = sample_rate
         self._sample_cycle_accumulator = 0
         self._audio_samples.clear()
+        self._dropped_audio_samples = 0
         self._reset_high_pass_filter()
 
     def set_output_enabled(self, enabled: bool) -> None:
@@ -277,6 +315,7 @@ class APU:
             return
         self._sample_cycle_accumulator = 0
         self._audio_samples.clear()
+        self._dropped_audio_samples = 0
         self._reset_high_pass_filter()
 
     def on_div_write(self, *, div_apu_falling_edge: bool) -> None:
@@ -353,8 +392,21 @@ class APU:
                 self._disable_channel(channel)
 
     def _disable_channel(self, channel: int) -> None:
+        if self.profile_enabled and self.channel_active & (1 << channel):
+            self._profile_channel_disables += 1
         self.channel_active &= ~(1 << channel)
         self._channel_output_enabled[channel] = False
+
+    def _profile_register_write(self) -> None:
+        if self.profile_enabled:
+            self._profile_register_writes += 1
+
+    def _profile_trigger_write(self, value: int) -> None:
+        if not self.profile_enabled:
+            return
+        self._profile_trigger_writes += 1
+        if value & 0x80:
+            self._profile_channel_triggers += 1
 
     def _dac_output(self, channel: int, sample: int) -> int:
         if not self._channel_output_enabled[channel]:
@@ -648,6 +700,11 @@ class APU:
         self._sample_cycle_accumulator += cycles * self.sample_rate
         while self._sample_cycle_accumulator >= CPU_CLOCK_HZ:
             self._sample_cycle_accumulator -= CPU_CLOCK_HZ
+            if len(self._audio_samples) >= self._audio_buffer_limit:
+                self._audio_samples.popleft()
+                self._dropped_audio_samples += 1
+                if self.profile_enabled:
+                    self._profile_dropped_samples += 1
             self._audio_samples.append(self.output_sample())
             if self.profile_enabled:
                 self._profile_generated_samples += 1

@@ -404,6 +404,17 @@ class CPUTests(unittest.TestCase):
         self.assertEqual(cpu.pc, 0x0101)
         self.assertEqual(cpu.cycles, 40)
 
+    def test_run_bulk_halt_invokes_after_step_after_idle_batch(self) -> None:
+        cpu, _ = make_cpu(bytes([0x76, 0x00]))
+        callbacks: list[int] = []
+
+        cpu.run(max_instructions=10, after_step=lambda: callbacks.append(cpu.cycles))
+
+        self.assertTrue(cpu.halted)
+        self.assertEqual(cpu.pc, 0x0101)
+        self.assertEqual(cpu.cycles, 40)
+        self.assertEqual(callbacks, [4, 40])
+
 
 if __name__ == "__main__":
     unittest.main()

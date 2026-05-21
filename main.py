@@ -45,6 +45,11 @@ def parse_args() -> argparse.Namespace:
         default=DisplayConfig.audio_chunk_ms,
         help="Live-audio submission chunk size in milliseconds for --window --audio",
     )
+    parser.add_argument(
+        "--capture-live-audio",
+        type=Path,
+        help="Write generated APU samples from live --window --audio playback to a WAV file",
+    )
     parser.add_argument("--window", action="store_true", help="Run with a Tkinter display window and keyboard input")
     parser.add_argument("--scale", type=int, default=3, help="Window scale factor for --window")
     parser.add_argument("--fps", type=float, default=DisplayConfig.fps, help="Target display refresh rate for --window")
@@ -101,6 +106,8 @@ def main() -> int:
         raise SystemExit("--audio-chunk-ms must be positive")
     if args.audio and not args.window:
         raise SystemExit("--audio requires --window")
+    if args.capture_live_audio is not None and not args.window:
+        raise SystemExit("--capture-live-audio requires --window")
     if args.max_instructions < 0:
         raise SystemExit("--max-instructions must be non-negative")
     if args.frames is not None and args.frames < 0:
@@ -140,6 +147,7 @@ def main() -> int:
                         audio_sample_rate=args.audio_sample_rate,
                         audio_buffer_ms=args.audio_buffer_ms,
                         audio_chunk_ms=args.audio_chunk_ms,
+                        audio_capture_path=args.capture_live_audio,
                     ),
                     initial_buttons=initial_buttons,
                     max_frames=args.frames,

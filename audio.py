@@ -32,6 +32,7 @@ class AudioPlaybackStats:
     queued_frames: int
     queued_ms: float
     underruns: int
+    low_buffer_events: int
     dropped_frames: int
     submitted_frames: int
     completed_frames: int
@@ -87,8 +88,10 @@ class BufferedAudioPlayer:
         self._min_buffer_frames = sample_rate * min_buffer_ms // 1000
         self._pending: list[AudioSample] = []
         self._underruns = 0
+        self._low_buffer_events = 0
         self._dropped_frames = 0
         self._primed = False
+        self._empty_buffer = False
         self._below_min_buffer = False
 
     def start(self) -> None:
@@ -116,6 +119,7 @@ class BufferedAudioPlayer:
             queued_frames=queued,
             queued_ms=queued / self.sample_rate * 1000,
             underruns=self._underruns,
+            low_buffer_events=self._low_buffer_events,
             dropped_frames=self._dropped_frames,
             submitted_frames=self._backend.submitted_frames,
             completed_frames=self._backend.completed_frames,
@@ -146,9 +150,14 @@ class BufferedAudioPlayer:
     def _update_underrun_state(self) -> None:
         if not self._primed:
             return
-        below_min = self.queued_frames() < self._min_buffer_frames
-        if below_min and not self._below_min_buffer:
+        queued = self.queued_frames()
+        empty = queued == 0
+        if empty and not self._empty_buffer:
             self._underruns += 1
+        self._empty_buffer = empty
+        below_min = queued < self._min_buffer_frames
+        if below_min and not self._below_min_buffer:
+            self._low_buffer_events += 1
         self._below_min_buffer = below_min
 
 

@@ -77,6 +77,25 @@ class AudioTests(unittest.TestCase):
         player.write([])
 
         self.assertEqual(player.stats().underruns, 1)
+        self.assertEqual(player.stats().low_buffer_events, 1)
+
+    def test_buffered_audio_player_tracks_low_buffer_without_hard_underrun(self) -> None:
+        backend = FakePCMBackend(sample_rate=1000)
+        player = BufferedAudioPlayer(
+            sample_rate=1000,
+            chunk_ms=10,
+            target_buffer_ms=30,
+            min_buffer_ms=20,
+            backend=backend,
+        )
+        player.start()
+        backend.complete(15)
+
+        player.write([])
+
+        self.assertEqual(player.stats().queued_frames, 15)
+        self.assertEqual(player.stats().underruns, 0)
+        self.assertEqual(player.stats().low_buffer_events, 1)
 
     def test_write_wav_samples_outputs_stereo_pcm(self) -> None:
         output = io.BytesIO()

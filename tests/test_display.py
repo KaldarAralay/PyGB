@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from audio import AudioPlaybackStats
@@ -117,10 +118,28 @@ class FakeAudioPlayer:
             queued_frames=2205,
             queued_ms=50.0,
             underruns=0,
+            low_buffer_events=0,
             dropped_frames=0,
             submitted_frames=2205,
             completed_frames=0,
         )
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeCaptureWriter:
+    instances: list["FakeCaptureWriter"] = []
+
+    def __init__(self, output: Path, *, sample_rate: int) -> None:
+        self.output = output
+        self.sample_rate = sample_rate
+        self.writes: list[list[tuple[int, int]]] = []
+        self.closed = False
+        FakeCaptureWriter.instances.append(self)
+
+    def write(self, samples) -> None:
+        self.writes.append(list(samples))
 
     def close(self) -> None:
         self.closed = True
@@ -286,6 +305,35 @@ class DisplayTests(unittest.TestCase):
         self.assertTrue(player.closed)
         self.assertEqual(emulator.bus.apu.sample_rates, [22_050])
         self.assertEqual(emulator.bus.apu.output_enabled_values, [False, True, False])
+
+    def test_tk_display_audio_capture_writes_live_samples_and_closes(self) -> None:
+        FakeAudioPlayer.instances.clear()
+        FakeCaptureWriter.instances.clear()
+        emulator = FakeEmulator()
+        capture_path = Path("live.wav")
+        display = TkDisplay(
+            emulator,
+            config=DisplayConfig(
+                audio_sample_rate=22_050,
+                audio_capture_path=capture_path,
+            ),
+        )
+        display._root = FakeRoot()
+        display._running = True
+
+        with (
+            patch("display.BufferedAudioPlayer", FakeAudioPlayer),
+            patch("display.WavAudioWriter", FakeCaptureWriter),
+        ):
+            display._on_key_press(FakeEvent("m"))
+            display._run_frame()
+            display._stop()
+
+        capture = FakeCaptureWriter.instances[0]
+        self.assertEqual(capture.output, capture_path)
+        self.assertEqual(capture.sample_rate, 22_050)
+        self.assertEqual(capture.writes, [[(1, -1)]])
+        self.assertTrue(capture.closed)
 
 
 if __name__ == "__main__":

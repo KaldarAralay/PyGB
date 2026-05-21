@@ -154,6 +154,8 @@ class CPU:
             if idle_cycles:
                 self._add_cycles(idle_cycles)
                 steps += idle_cycles // 4
+                if after_step is not None:
+                    after_step()
                 continue
             self.step(trace=trace)
             steps += 1
@@ -179,7 +181,7 @@ class CPU:
         step_mode: bool,
         after_step,
     ) -> int:
-        if trace or step_mode or after_step is not None:
+        if trace or step_mode:
             return 0
         if not self.halted or self._pending_interrupts():
             return 0
