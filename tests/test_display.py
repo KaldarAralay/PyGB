@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
+from audio import AudioPlaybackStats
 from display import (
     DisplayConfig,
     TkDisplay,
@@ -54,9 +56,13 @@ class FakePPU:
 class FakeAPU:
     def __init__(self) -> None:
         self.output_enabled_values: list[bool] = []
+        self.sample_rates: list[int] = []
 
     def set_output_enabled(self, enabled: bool) -> None:
         self.output_enabled_values.append(enabled)
+
+    def set_sample_rate(self, sample_rate: int) -> None:
+        self.sample_rates.append(sample_rate)
 
 
 class FakeBus:
@@ -70,6 +76,7 @@ class FakeEmulator:
         self.bus = FakeBus()
         self.buttons: set[str] = set()
         self.run_calls: list[dict[str, object]] = []
+        self.audio_samples = [(1, -1)]
         self.reset_count = 0
 
     def set_buttons(self, buttons: set[str]) -> None:
@@ -80,6 +87,43 @@ class FakeEmulator:
 
     def reset(self) -> None:
         self.reset_count += 1
+
+    def drain_audio_samples(self) -> list[tuple[int, int]]:
+        samples = list(self.audio_samples)
+        self.audio_samples.clear()
+        return samples
+
+
+class FakeAudioPlayer:
+    instances: list["FakeAudioPlayer"] = []
+
+    def __init__(self, *, sample_rate: int, target_buffer_ms: int, chunk_ms: int) -> None:
+        self.sample_rate = sample_rate
+        self.target_buffer_ms = target_buffer_ms
+        self.chunk_ms = chunk_ms
+        self.started = False
+        self.closed = False
+        self.writes: list[list[tuple[int, int]]] = []
+        FakeAudioPlayer.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def write(self, samples) -> None:
+        self.writes.append(list(samples))
+
+    def stats(self) -> AudioPlaybackStats:
+        return AudioPlaybackStats(
+            queued_frames=2205,
+            queued_ms=50.0,
+            underruns=0,
+            dropped_frames=0,
+            submitted_frames=2205,
+            completed_frames=0,
+        )
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class DisplayTests(unittest.TestCase):
@@ -101,6 +145,8 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(display_command_for_key("r"), "reset")
         self.assertEqual(display_command_for_key("t"), "trace")
         self.assertEqual(display_command_for_key("T"), "trace")
+        self.assertEqual(display_command_for_key("m"), "audio")
+        self.assertEqual(display_command_for_key("M"), "audio")
         self.assertEqual(display_command_for_key("Escape"), "quit")
         self.assertIsNone(display_command_for_key("z"))
 
@@ -146,6 +192,12 @@ class DisplayTests(unittest.TestCase):
             DisplayConfig(max_instructions_per_frame=0)
         with self.assertRaises(ValueError):
             DisplayConfig(profile_interval=0)
+        with self.assertRaises(ValueError):
+            DisplayConfig(audio_sample_rate=0)
+        with self.assertRaises(ValueError):
+            DisplayConfig(audio_buffer_ms=0)
+        with self.assertRaises(ValueError):
+            DisplayConfig(audio_chunk_ms=0)
 
     def test_tk_display_draw_frame_uploads_one_full_image(self) -> None:
         emulator = FakeEmulator()
@@ -209,6 +261,31 @@ class DisplayTests(unittest.TestCase):
 
         display._on_key_press(FakeEvent("T"))
         self.assertEqual(display._root.title_text, "GBemu")
+
+    def test_tk_display_audio_toggle_streams_and_closes_live_audio(self) -> None:
+        FakeAudioPlayer.instances.clear()
+        emulator = FakeEmulator()
+        display = TkDisplay(
+            emulator,
+            config=DisplayConfig(audio_sample_rate=22_050, audio_buffer_ms=80, audio_chunk_ms=10),
+        )
+        display._root = FakeRoot()
+        display._running = True
+
+        with patch("display.BufferedAudioPlayer", FakeAudioPlayer):
+            display._on_key_press(FakeEvent("m"))
+            display._run_frame()
+            display._on_key_press(FakeEvent("m"))
+
+        player = FakeAudioPlayer.instances[0]
+        self.assertTrue(player.started)
+        self.assertEqual(player.sample_rate, 22_050)
+        self.assertEqual(player.target_buffer_ms, 80)
+        self.assertEqual(player.chunk_ms, 10)
+        self.assertEqual(player.writes, [[(1, -1)]])
+        self.assertTrue(player.closed)
+        self.assertEqual(emulator.bus.apu.sample_rates, [22_050])
+        self.assertEqual(emulator.bus.apu.output_enabled_values, [False, True, False])
 
 
 if __name__ == "__main__":

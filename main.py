@@ -30,7 +30,20 @@ def parse_args() -> argparse.Namespace:
         "--audio-sample-rate",
         type=int,
         default=DEFAULT_SAMPLE_RATE,
-        help="Sample rate for --dump-audio",
+        help="Sample rate for --dump-audio and --window --audio",
+    )
+    parser.add_argument("--audio", action="store_true", help="Enable live audio playback in --window mode")
+    parser.add_argument(
+        "--audio-buffer-ms",
+        type=int,
+        default=DisplayConfig.audio_buffer_ms,
+        help="Target live-audio buffer latency in milliseconds for --window --audio",
+    )
+    parser.add_argument(
+        "--audio-chunk-ms",
+        type=int,
+        default=DisplayConfig.audio_chunk_ms,
+        help="Live-audio submission chunk size in milliseconds for --window --audio",
     )
     parser.add_argument("--window", action="store_true", help="Run with a Tkinter display window and keyboard input")
     parser.add_argument("--scale", type=int, default=3, help="Window scale factor for --window")
@@ -82,6 +95,12 @@ def main() -> int:
     )
     if args.audio_sample_rate <= 0:
         raise SystemExit("--audio-sample-rate must be positive")
+    if args.audio_buffer_ms <= 0:
+        raise SystemExit("--audio-buffer-ms must be positive")
+    if args.audio_chunk_ms <= 0:
+        raise SystemExit("--audio-chunk-ms must be positive")
+    if args.audio and not args.window:
+        raise SystemExit("--audio requires --window")
     if args.max_instructions < 0:
         raise SystemExit("--max-instructions must be non-negative")
     if args.frames is not None and args.frames < 0:
@@ -117,6 +136,10 @@ def main() -> int:
                         max_instructions_per_frame=args.frame_instruction_limit,
                         profile_window=args.profile_window,
                         profile_interval=args.profile_window_interval,
+                        audio_enabled=args.audio,
+                        audio_sample_rate=args.audio_sample_rate,
+                        audio_buffer_ms=args.audio_buffer_ms,
+                        audio_chunk_ms=args.audio_chunk_ms,
                     ),
                     initial_buttons=initial_buttons,
                     max_frames=args.frames,

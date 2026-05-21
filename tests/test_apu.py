@@ -579,12 +579,21 @@ class APUTests(unittest.TestCase):
     def test_audio_sample_buffer_uses_configured_sample_rate(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.apu.set_sample_rate(4)
+        bus.apu.set_output_enabled(True)
 
         bus.apu.tick(CPU_CLOCK_HZ // 4 - 1)
         self.assertEqual(bus.apu.drain_audio_samples(), [])
 
         bus.apu.tick(1)
         self.assertEqual(bus.apu.drain_audio_samples(), [(0, 0)])
+        self.assertEqual(bus.apu.drain_audio_samples(), [])
+
+    def test_audio_output_starts_disabled_until_requested(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.apu.set_sample_rate(4)
+
+        bus.apu.tick(CPU_CLOCK_HZ // 4)
+
         self.assertEqual(bus.apu.drain_audio_samples(), [])
 
     def test_audio_sample_rate_must_be_positive(self) -> None:

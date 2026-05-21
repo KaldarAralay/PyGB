@@ -87,15 +87,22 @@ class Emulator:
             if samples:
                 audio_sink(samples)
 
-        self.cpu.run(
-            max_instructions=max_instructions,
-            trace=trace,
-            trace_sink=trace_sink,
-            step_mode=step_mode,
-            stop_condition=stop_condition if stop_on_serial_result or frame_target is not None else None,
-            after_step=drain_audio if audio_sink is not None else None,
-        )
-        drain_audio()
+        previous_audio_output = self.bus.apu.output_enabled
+        if audio_sink is not None:
+            self.bus.apu.set_output_enabled(True)
+        try:
+            self.cpu.run(
+                max_instructions=max_instructions,
+                trace=trace,
+                trace_sink=trace_sink,
+                step_mode=step_mode,
+                stop_condition=stop_condition if stop_on_serial_result or frame_target is not None else None,
+                after_step=drain_audio if audio_sink is not None else None,
+            )
+            drain_audio()
+        finally:
+            if audio_sink is not None and not previous_audio_output:
+                self.bus.apu.set_output_enabled(False)
 
     def run_frame(self, *, max_instructions: int | None = None) -> None:
         self.run(max_instructions=max_instructions, max_frames=1)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections import deque
 from typing import Protocol
 
@@ -110,7 +111,7 @@ class APU:
         self.sample_rate = sample_rate
         self._sample_cycle_accumulator = 0
         self._audio_samples: deque[tuple[int, int]] = deque(maxlen=audio_buffer_limit)
-        self.output_enabled = True
+        self.output_enabled = False
         self._high_pass_capacitors = [0.0, 0.0]
         self.channel_active = self.bus.io[NR52] & 0x0F
         self._channel_output_enabled = [False, False, False, False]
@@ -128,6 +129,9 @@ class APU:
         self.wave_position = 0
         self.wave_sample_buffer = 0
         self.noise_lfsr = 0x7FFF
+        self.profile_enabled = False
+        self._profile_tick_seconds = 0.0
+        self._profile_generated_samples = 0
 
     @property
     def powered(self) -> bool:
@@ -176,14 +180,30 @@ class APU:
             self._disable_channel_if_dac_off(offset)
 
     def tick(self, cycles: int) -> None:
+        if not self.profile_enabled:
+            self._tick(cycles)
+            return
+        started = time.perf_counter()
+        try:
+            self._tick(cycles)
+        finally:
+            self._profile_tick_seconds += time.perf_counter() - started
+
+    def consume_profile(self) -> tuple[float, int]:
+        tick_seconds = self._profile_tick_seconds
+        generated_samples = self._profile_generated_samples
+        self._profile_tick_seconds = 0.0
+        self._profile_generated_samples = 0
+        return tick_seconds, generated_samples
+
+    def _tick(self, cycles: int) -> None:
         if cycles <= 0:
             return
         if not self.powered:
             if self.output_enabled:
                 self._collect_output_samples(cycles)
             return
-        if self.output_enabled:
-            self._tick_frequency_timers(cycles)
+        self._tick_frequency_timers(cycles)
         self._frame_sequence_counter += cycles
         while self._frame_sequence_counter >= FRAME_SEQUENCER_PERIOD:
             self._frame_sequence_counter -= FRAME_SEQUENCER_PERIOD
@@ -210,18 +230,29 @@ class APU:
         )
 
     def mix_sample(self) -> tuple[int, int]:
-        channels = self.dac_sample_channels()
+        if not self.powered:
+            return (0, 0)
         nr50 = self.bus.io[NR50]
         nr51 = self.bus.io[NR51]
         left_volume = ((nr50 >> 4) & 0x07) + 1
         right_volume = (nr50 & 0x07) + 1
         left = 0
         right = 0
-        for channel, sample in enumerate(channels):
+
+        samples = (
+            self._pulse_sample(0),
+            self._pulse_sample(1),
+            self._wave_sample(),
+            self._noise_sample(),
+        )
+        for channel, sample in enumerate(samples):
+            if not self._channel_output_enabled[channel] or not self._channel_dac_enabled(channel):
+                continue
+            dac_sample = (sample & 0x0F) * 2 - 15
             if nr51 & (1 << channel):
-                right += sample
+                right += dac_sample
             if nr51 & (1 << (channel + 4)):
-                left += sample
+                left += dac_sample
         return left * left_volume, right * right_volume
 
     def output_sample(self) -> tuple[int, int]:
@@ -333,14 +364,12 @@ class APU:
         return (sample & 0x0F) * 2 - 15
 
     def _high_pass_filter_sample(self, sample: tuple[int, int]) -> tuple[int, int]:
-        filtered = []
-        for index, value in enumerate(sample):
-            output = float(value) - self._high_pass_capacitors[index]
-            self._high_pass_capacitors[index] = (
-                float(value) - output * DMG_HIGH_PASS_CHARGE_FACTOR
-            )
-            filtered.append(int(round(output)))
-        return filtered[0], filtered[1]
+        left, right = sample
+        left_output = float(left) - self._high_pass_capacitors[0]
+        right_output = float(right) - self._high_pass_capacitors[1]
+        self._high_pass_capacitors[0] = float(left) - left_output * DMG_HIGH_PASS_CHARGE_FACTOR
+        self._high_pass_capacitors[1] = float(right) - right_output * DMG_HIGH_PASS_CHARGE_FACTOR
+        return int(round(left_output)), int(round(right_output))
 
     def _reset_high_pass_filter(self) -> None:
         self._high_pass_capacitors = [0.0, 0.0]
@@ -500,16 +529,56 @@ class APU:
         self.bus.io[high_register] = (self.bus.io[high_register] & 0xF8) | (period >> 8)
 
     def _tick_frequency_timers(self, cycles: int) -> None:
-        for channel in range(4):
-            if not self._channel_output_enabled[channel]:
-                continue
-            reload_cycles = self._frequency_timer_reload(channel)
-            if reload_cycles is None:
-                continue
-            self.frequency_timers[channel] -= cycles
-            while self.frequency_timers[channel] <= 0:
-                self.frequency_timers[channel] += reload_cycles
-                self._advance_waveform(channel)
+        enabled = self._channel_output_enabled
+        timers = self.frequency_timers
+        io = self.bus.io
+
+        if enabled[0]:
+            period = io[0x13] | ((io[0x14] & 0x07) << 8)
+            reload_cycles = max(1, (2048 - period) * 4)
+            timer = timers[0] - cycles
+            while timer <= 0:
+                timer += reload_cycles
+                self.duty_positions[0] = (self.duty_positions[0] + 1) & 0x07
+            timers[0] = timer
+
+        if enabled[1]:
+            period = io[0x18] | ((io[0x19] & 0x07) << 8)
+            reload_cycles = max(1, (2048 - period) * 4)
+            timer = timers[1] - cycles
+            while timer <= 0:
+                timer += reload_cycles
+                self.duty_positions[1] = (self.duty_positions[1] + 1) & 0x07
+            timers[1] = timer
+
+        if enabled[2]:
+            period = io[0x1D] | ((io[0x1E] & 0x07) << 8)
+            reload_cycles = max(1, (2048 - period) * 2)
+            timer = timers[2] - cycles
+            while timer <= 0:
+                timer += reload_cycles
+                self.wave_position = (self.wave_position + 1) & 0x1F
+                sample_byte = io[WAVE_RAM_START + (self.wave_position // 2)]
+                self.wave_sample_buffer = sample_byte & 0x0F if self.wave_position & 1 else sample_byte >> 4
+            timers[2] = timer
+
+        if enabled[3]:
+            value = io[0x22]
+            shift = (value >> 4) & 0x0F
+            if shift < 14:
+                reload_cycles = max(1, NOISE_DIVISORS[value & 0x07] << shift)
+                timer = timers[3] - cycles
+                noise_lfsr = self.noise_lfsr
+                width_mode = value & 0x08
+                while timer <= 0:
+                    timer += reload_cycles
+                    xor_bit = (noise_lfsr & 0x01) ^ ((noise_lfsr >> 1) & 0x01)
+                    noise_lfsr = (noise_lfsr >> 1) | (xor_bit << 14)
+                    if width_mode:
+                        noise_lfsr = (noise_lfsr & ~0x40) | (xor_bit << 6)
+                    noise_lfsr &= 0x7FFF
+                timers[3] = timer
+                self.noise_lfsr = noise_lfsr
 
     def _frequency_timer_reload(self, channel: int) -> int | None:
         if channel in {0, 1}:
@@ -580,3 +649,5 @@ class APU:
         while self._sample_cycle_accumulator >= CPU_CLOCK_HZ:
             self._sample_cycle_accumulator -= CPU_CLOCK_HZ
             self._audio_samples.append(self.output_sample())
+            if self.profile_enabled:
+                self._profile_generated_samples += 1

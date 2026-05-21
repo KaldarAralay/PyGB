@@ -148,6 +148,7 @@ class MainLoopTests(unittest.TestCase):
 
         self.assertEqual(samples, [(0, 0), (0, 0), (0, 0)])
         self.assertEqual(emulator.drain_audio_samples(), [])
+        self.assertFalse(emulator.bus.apu.output_enabled)
 
     def test_emulator_can_start_with_boot_rom_mapping(self) -> None:
         emulator = Emulator(

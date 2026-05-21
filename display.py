@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from apu import DEFAULT_SAMPLE_RATE
+from audio import AudioPlaybackStats, BufferedAudioPlayer
 from joypad import BUTTON_BITS
 from ppu import DMG_GRAYSCALE, SCREEN_HEIGHT, SCREEN_WIDTH
 
@@ -31,6 +33,7 @@ DISPLAY_COMMANDS = {
     "Pause": "pause",
     "r": "reset",
     "t": "trace",
+    "m": "audio",
     "Escape": "quit",
 }
 
@@ -43,6 +46,10 @@ class DisplayConfig:
     max_instructions_per_frame: int = 200_000
     profile_window: bool = False
     profile_interval: int = 60
+    audio_enabled: bool = False
+    audio_sample_rate: int = DEFAULT_SAMPLE_RATE
+    audio_buffer_ms: int = 100
+    audio_chunk_ms: int = 20
 
     def __post_init__(self) -> None:
         if self.scale < 1:
@@ -53,6 +60,12 @@ class DisplayConfig:
             raise ValueError("per-frame instruction limit must be positive")
         if self.profile_interval < 1:
             raise ValueError("profile interval must be positive")
+        if self.audio_sample_rate <= 0:
+            raise ValueError("audio sample rate must be positive")
+        if self.audio_buffer_ms <= 0:
+            raise ValueError("audio buffer must be positive")
+        if self.audio_chunk_ms <= 0:
+            raise ValueError("audio chunk size must be positive")
 
 
 def button_for_key(keysym: str) -> str | None:
@@ -116,13 +129,20 @@ class TkDisplay:
         self._label = None
         self._running = False
         self._paused = False
+        self._audio_enabled = self.config.audio_enabled
+        self._audio_player: BufferedAudioPlayer | None = None
         self._profile_frames = 0
         self._profile_run_seconds = 0.0
         self._profile_draw_seconds = 0.0
+        self._profile_audio_seconds = 0.0
+        self._profile_apu_seconds = 0.0
+        self._profile_apu_samples = 0
         self._profile_total_seconds = 0.0
+        self._profile_audio_stats: AudioPlaybackStats | None = None
         self._profile_report_started = time.perf_counter()
         self.emulator.set_buttons(self.pressed)
-        self.emulator.bus.apu.set_output_enabled(False)
+        self.emulator.bus.apu.set_output_enabled(self._audio_enabled)
+        self._configure_apu_profile()
 
     def run(self) -> None:
         try:
@@ -147,6 +167,8 @@ class TkDisplay:
         self._root.bind("<KeyPress>", self._on_key_press)
         self._root.bind("<KeyRelease>", self._on_key_release)
         self._root.protocol("WM_DELETE_WINDOW", self._stop)
+        if self._audio_enabled:
+            self._start_audio(raise_on_error=True)
         self._update_title()
         self._running = True
         self._schedule_next_frame(0)
@@ -161,13 +183,19 @@ class TkDisplay:
         if command == "reset":
             self.emulator.reset()
             self.emulator.set_buttons(self.pressed)
-            self.emulator.bus.apu.set_output_enabled(False)
+            self.emulator.bus.apu.set_sample_rate(self.config.audio_sample_rate)
+            self.emulator.bus.apu.set_output_enabled(self._audio_enabled)
+            self._configure_apu_profile()
             self._start_frame = self.emulator.bus.ppu.frame_count
             self._draw_frame()
             self._update_title()
             return
         if command == "trace":
             self._trace_enabled = not self._trace_enabled
+            self._update_title()
+            return
+        if command == "audio":
+            self._toggle_audio()
             self._update_title()
             return
         if command == "quit":
@@ -199,6 +227,7 @@ class TkDisplay:
         started = time.perf_counter()
         run_elapsed = 0.0
         draw_elapsed = 0.0
+        audio_elapsed = 0.0
         if not self._paused:
             run_started = time.perf_counter()
             self.emulator.run(
@@ -208,12 +237,26 @@ class TkDisplay:
                 trace_sink=self._trace_sink,
             )
             run_elapsed = time.perf_counter() - run_started
+            apu_elapsed, apu_samples = self._consume_apu_profile()
+            audio_started = time.perf_counter()
+            self._write_audio()
+            audio_elapsed = time.perf_counter() - audio_started
             draw_started = time.perf_counter()
             self._draw_frame()
             draw_elapsed = time.perf_counter() - draw_started
+        else:
+            apu_elapsed = 0.0
+            apu_samples = 0
         elapsed = time.perf_counter() - started
         if not self._paused:
-            self._record_profile_frame(run_elapsed, draw_elapsed, elapsed)
+            self._record_profile_frame(
+                run_elapsed,
+                draw_elapsed,
+                audio_elapsed,
+                apu_elapsed,
+                apu_samples,
+                elapsed,
+            )
         target = 1.0 / self.config.fps
         self._schedule_next_frame(max(1, int((target - elapsed) * 1000)))
 
@@ -239,6 +282,9 @@ class TkDisplay:
         self,
         run_seconds: float,
         draw_seconds: float,
+        audio_seconds: float,
+        apu_seconds: float,
+        apu_samples: int,
         total_seconds: float,
     ) -> None:
         if not self.config.profile_window:
@@ -246,26 +292,49 @@ class TkDisplay:
         self._profile_frames += 1
         self._profile_run_seconds += run_seconds
         self._profile_draw_seconds += draw_seconds
+        self._profile_audio_seconds += audio_seconds
+        self._profile_apu_seconds += apu_seconds
+        self._profile_apu_samples += apu_samples
         self._profile_total_seconds += total_seconds
+        if self._audio_player is not None:
+            self._profile_audio_stats = self._audio_player.stats()
         if self._profile_frames < self.config.profile_interval:
             return
 
         now = time.perf_counter()
         wall_seconds = now - self._profile_report_started
         frames = self._profile_frames
-        print(
-            "window-profile "
-            f"frames={frames} "
-            f"run_ms={self._profile_run_seconds / frames * 1000:.2f} "
-            f"draw_ms={self._profile_draw_seconds / frames * 1000:.2f} "
-            f"active_ms={self._profile_total_seconds / frames * 1000:.2f} "
+        parts = [
+            "window-profile",
+            f"frames={frames}",
+            f"run_ms={self._profile_run_seconds / frames * 1000:.2f}",
+            f"draw_ms={self._profile_draw_seconds / frames * 1000:.2f}",
+            f"audio_ms={self._profile_audio_seconds / frames * 1000:.2f}",
+            f"apu_ms={self._profile_apu_seconds / frames * 1000:.2f}",
+            f"apu_samples={self._profile_apu_samples}",
+            f"active_ms={self._profile_total_seconds / frames * 1000:.2f}",
             f"wall_fps={frames / wall_seconds if wall_seconds > 0 else 0.0:.2f}",
+        ]
+        if self._profile_audio_stats is not None:
+            parts.extend(
+                [
+                    f"audio_queue_ms={self._profile_audio_stats.queued_ms:.1f}",
+                    f"audio_underruns={self._profile_audio_stats.underruns}",
+                    f"audio_dropped={self._profile_audio_stats.dropped_frames}",
+                ]
+            )
+        print(
+            " ".join(parts),
             flush=True,
         )
         self._profile_frames = 0
         self._profile_run_seconds = 0.0
         self._profile_draw_seconds = 0.0
+        self._profile_audio_seconds = 0.0
+        self._profile_apu_seconds = 0.0
+        self._profile_apu_samples = 0
         self._profile_total_seconds = 0.0
+        self._profile_audio_stats = None
         self._profile_report_started = now
 
     def _reached_frame_limit(self) -> bool:
@@ -275,6 +344,7 @@ class TkDisplay:
 
     def _stop(self) -> None:
         self._running = False
+        self._stop_audio()
         if self._root is not None:
             self._root.destroy()
 
@@ -286,7 +356,61 @@ class TkDisplay:
             suffix += " [paused]"
         if self._trace_enabled:
             suffix += " [trace]"
+        if self._audio_enabled:
+            suffix += " [audio]"
         self._root.title(f"{self.config.title}{suffix}")
+
+    def _toggle_audio(self) -> None:
+        if self._audio_enabled:
+            self._audio_enabled = False
+            self._stop_audio()
+            return
+        self._audio_enabled = True
+        self._start_audio(raise_on_error=False)
+
+    def _start_audio(self, *, raise_on_error: bool) -> None:
+        if self._audio_player is not None:
+            return
+        try:
+            self.emulator.bus.apu.set_sample_rate(self.config.audio_sample_rate)
+            self.emulator.bus.apu.set_output_enabled(True)
+            self._audio_player = BufferedAudioPlayer(
+                sample_rate=self.config.audio_sample_rate,
+                target_buffer_ms=self.config.audio_buffer_ms,
+                chunk_ms=self.config.audio_chunk_ms,
+            )
+            self._audio_player.start()
+        except (RuntimeError, ValueError) as exc:
+            self._audio_enabled = False
+            self.emulator.bus.apu.set_output_enabled(False)
+            if raise_on_error:
+                raise RuntimeError(str(exc)) from exc
+            print(f"Audio disabled: {exc}", flush=True)
+
+    def _stop_audio(self) -> None:
+        if self._audio_player is None:
+            return
+        self._audio_player.close()
+        self._audio_player = None
+        self.emulator.bus.apu.set_output_enabled(False)
+        self._profile_audio_stats = None
+
+    def _write_audio(self) -> None:
+        if self._audio_player is None:
+            return
+        self._audio_player.write(self.emulator.drain_audio_samples())
+
+    def _configure_apu_profile(self) -> None:
+        if hasattr(self.emulator.bus.apu, "profile_enabled"):
+            self.emulator.bus.apu.profile_enabled = self.config.profile_window
+
+    def _consume_apu_profile(self) -> tuple[float, int]:
+        if not self.config.profile_window:
+            return 0.0, 0
+        consume_profile = getattr(self.emulator.bus.apu, "consume_profile", None)
+        if consume_profile is None:
+            return 0.0, 0
+        return consume_profile()
 
 
 def run_tk_display(
