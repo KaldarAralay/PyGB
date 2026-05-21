@@ -593,6 +593,16 @@ class APUTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bus.apu.set_sample_rate(0)
 
+    def test_output_disabled_skips_sample_collection_but_keeps_frame_sequencer(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.apu.set_sample_rate(4)
+        bus.apu.set_output_enabled(False)
+
+        bus.apu.tick(FRAME_SEQUENCER_PERIOD)
+
+        self.assertEqual(bus.apu.drain_audio_samples(), [])
+        self.assertEqual(bus.apu.frame_sequence_step, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@ from display import (
     button_for_key,
     buttons_for_keys,
     display_command_for_key,
+    framebuffer_to_tk_image_data,
     framebuffer_to_tk_rows,
 )
 
@@ -32,14 +33,36 @@ class FakeRoot:
         pass
 
 
+class FakeImage:
+    def __init__(self) -> None:
+        self.put_calls: list[tuple[str, tuple[int, int]]] = []
+        self.copy_calls: list[tuple[object, ...]] = []
+        self.tk = self
+
+    def put(self, data: str, *, to: tuple[int, int]) -> None:
+        self.put_calls.append((data, to))
+
+    def call(self, *args: object) -> None:
+        self.copy_calls.append(args)
+
+
 class FakePPU:
     frame_count = 0
     framebuffer = [[0]]
 
 
+class FakeAPU:
+    def __init__(self) -> None:
+        self.output_enabled_values: list[bool] = []
+
+    def set_output_enabled(self, enabled: bool) -> None:
+        self.output_enabled_values.append(enabled)
+
+
 class FakeBus:
     def __init__(self) -> None:
         self.ppu = FakePPU()
+        self.apu = FakeAPU()
 
 
 class FakeEmulator:
@@ -101,6 +124,17 @@ class DisplayTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             framebuffer_to_tk_rows([[0]], scale=0)
 
+    def test_framebuffer_image_data_contains_all_scaled_rows(self) -> None:
+        data = framebuffer_to_tk_image_data([[0, 3], [1, 2]], scale=2)
+
+        self.assertEqual(
+            data,
+            "{#ffffff #ffffff #000000 #000000} "
+            "{#ffffff #ffffff #000000 #000000} "
+            "{#aaaaaa #aaaaaa #555555 #555555} "
+            "{#aaaaaa #aaaaaa #555555 #555555}",
+        )
+
     def test_display_config_validation(self) -> None:
         self.assertEqual(DisplayConfig(scale=2).scale, 2)
 
@@ -110,6 +144,48 @@ class DisplayTests(unittest.TestCase):
             DisplayConfig(fps=0)
         with self.assertRaises(ValueError):
             DisplayConfig(max_instructions_per_frame=0)
+        with self.assertRaises(ValueError):
+            DisplayConfig(profile_interval=0)
+
+    def test_tk_display_draw_frame_uploads_one_full_image(self) -> None:
+        emulator = FakeEmulator()
+        emulator.bus.ppu.framebuffer = [[0, 3], [1, 2]]
+        display = TkDisplay(emulator, config=DisplayConfig(scale=1))
+        image = FakeImage()
+        display._image = image
+        display._label = object()
+
+        display._draw_frame()
+
+        self.assertEqual(len(image.put_calls), 1)
+        self.assertEqual(image.put_calls[0][1], (0, 0))
+        self.assertEqual(
+            image.put_calls[0][0],
+            framebuffer_to_tk_image_data(emulator.bus.ppu.framebuffer),
+        )
+
+    def test_tk_display_scaled_draw_uploads_source_and_native_zooms(self) -> None:
+        emulator = FakeEmulator()
+        emulator.bus.ppu.framebuffer = [[0, 3], [1, 2]]
+        display = TkDisplay(emulator, config=DisplayConfig(scale=2))
+        source_image = FakeImage()
+        scaled_image = FakeImage()
+        display._source_image = source_image
+        display._image = scaled_image
+        display._label = object()
+
+        display._draw_frame()
+
+        self.assertEqual(len(source_image.put_calls), 1)
+        self.assertEqual(
+            source_image.put_calls[0][0],
+            framebuffer_to_tk_image_data(emulator.bus.ppu.framebuffer),
+        )
+        self.assertEqual(scaled_image.put_calls, [])
+        self.assertEqual(
+            scaled_image.copy_calls,
+            [(scaled_image, "copy", source_image, "-zoom", 2, 2)],
+        )
 
     def test_tk_display_trace_command_toggles_run_tracing(self) -> None:
         emulator = FakeEmulator()

@@ -110,6 +110,7 @@ class APU:
         self.sample_rate = sample_rate
         self._sample_cycle_accumulator = 0
         self._audio_samples: deque[tuple[int, int]] = deque(maxlen=audio_buffer_limit)
+        self.output_enabled = True
         self._high_pass_capacitors = [0.0, 0.0]
         self.channel_active = self.bus.io[NR52] & 0x0F
         self._channel_output_enabled = [False, False, False, False]
@@ -178,14 +179,17 @@ class APU:
         if cycles <= 0:
             return
         if not self.powered:
-            self._collect_output_samples(cycles)
+            if self.output_enabled:
+                self._collect_output_samples(cycles)
             return
-        self._tick_frequency_timers(cycles)
+        if self.output_enabled:
+            self._tick_frequency_timers(cycles)
         self._frame_sequence_counter += cycles
         while self._frame_sequence_counter >= FRAME_SEQUENCER_PERIOD:
             self._frame_sequence_counter -= FRAME_SEQUENCER_PERIOD
             self._advance_frame_sequence()
-        self._collect_output_samples(cycles)
+        if self.output_enabled:
+            self._collect_output_samples(cycles)
 
     def sample_channels(self) -> tuple[int, int, int, int]:
         if not self.powered:
@@ -232,6 +236,14 @@ class APU:
         if sample_rate <= 0:
             raise ValueError("APU sample rate must be positive")
         self.sample_rate = sample_rate
+        self._sample_cycle_accumulator = 0
+        self._audio_samples.clear()
+        self._reset_high_pass_filter()
+
+    def set_output_enabled(self, enabled: bool) -> None:
+        self.output_enabled = enabled
+        if enabled:
+            return
         self._sample_cycle_accumulator = 0
         self._audio_samples.clear()
         self._reset_high_pass_filter()

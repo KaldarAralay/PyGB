@@ -41,6 +41,17 @@ def parse_args() -> argparse.Namespace:
         default=200_000,
         help="Per-frame CPU instruction safety limit for --window",
     )
+    parser.add_argument(
+        "--profile-window",
+        action="store_true",
+        help="Print rolling timing for emulation and Tk framebuffer upload in --window mode",
+    )
+    parser.add_argument(
+        "--profile-window-interval",
+        type=int,
+        default=DisplayConfig.profile_interval,
+        help="Window frame count per --profile-window timing report",
+    )
     parser.add_argument("--save-file", type=Path, help="Load cartridge RAM from this file and save it on exit")
     parser.add_argument(
         "--buttons",
@@ -104,6 +115,8 @@ def main() -> int:
                         scale=args.scale,
                         fps=args.fps,
                         max_instructions_per_frame=args.frame_instruction_limit,
+                        profile_window=args.profile_window,
+                        profile_interval=args.profile_window_interval,
                     ),
                     initial_buttons=initial_buttons,
                     max_frames=args.frames,

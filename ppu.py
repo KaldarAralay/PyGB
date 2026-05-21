@@ -148,8 +148,29 @@ class PPU:
             self._set_mode(MODE_HBLANK)
             return
 
-        for _ in range(cycles):
-            self.line_dots += 1
+        while cycles > 0:
+            next_dot = DOTS_PER_LINE
+            ly = self._scanline
+            if ly < VISIBLE_LINES:
+                if self.line_dots < MODE2_DOTS:
+                    next_dot = min(next_dot, MODE2_DOTS)
+                if self.mode == MODE_DRAWING:
+                    next_dot = min(next_dot, MODE2_DOTS + self._line_mode3_dots)
+                if self.line_dots < DOTS_PER_LINE - 4:
+                    next_dot = min(next_dot, DOTS_PER_LINE - 4)
+            elif ly == LINES_PER_FRAME - 1 and self.line_dots < 4:
+                next_dot = min(next_dot, 4)
+
+            if self._hblank_stat_interrupt_dot is not None:
+                if self.line_dots >= self._hblank_stat_interrupt_dot:
+                    self._maybe_request_pending_hblank_stat_interrupt()
+                else:
+                    next_dot = min(next_dot, self._hblank_stat_interrupt_dot)
+
+            elapsed = min(cycles, max(1, next_dot - self.line_dots))
+            self.line_dots += elapsed
+            cycles -= elapsed
+
             ly = self._scanline
             if ly < VISIBLE_LINES:
                 if self.line_dots == MODE2_DOTS:
@@ -1802,19 +1823,24 @@ class PPU:
         *,
         screen_x: int | None = None,
     ) -> int:
-        tile_x = self._bg_tile_screen_x(screen_x) if screen_x is not None else None
+        needs_tile_x = screen_x is not None and (
+            bool(self._line_bg_tile_map_scy)
+            or bool(self._line_bg_tile_data_sources)
+            or bool(self._line_bg_tile_data_scy)
+        )
+        tile_x = self._bg_tile_screen_x(screen_x) if needs_tile_x else None
         map_y = y
-        if tile_x is not None and self._line_bg_tile_map_scy is not None:
+        if tile_x is not None and self._line_bg_tile_map_scy:
             map_scy = self._line_bg_tile_map_scy.get(tile_x)
             if map_scy is not None:
                 map_y = (self._scanline + map_scy) & 0xFF
         tile_map_index = map_base + ((map_y & 0xFF) // 8) * 32 + ((x & 0xFF) // 8)
         tile_id = self.bus.vram[tile_map_index]
         source_override = None
-        if screen_x is not None and self._line_bg_tile_data_sources is not None:
+        if tile_x is not None and self._line_bg_tile_data_sources:
             source_override = self._line_bg_tile_data_sources.get(tile_x)
         scy_override = None
-        if tile_x is not None and self._line_bg_tile_data_scy is not None:
+        if tile_x is not None and self._line_bg_tile_data_scy:
             scy_override = self._line_bg_tile_data_scy.get(tile_x)
         if scy_override is not None:
             return self._tile_pixel_with_byte_sources_and_rows(

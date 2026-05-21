@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 
 DMG_FPS = 4_194_304 / (154 * 456)
+TK_DMG_COLORS = tuple(f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in DMG_GRAYSCALE)
 
 DEFAULT_KEYMAP = {
     "z": "a",
@@ -40,6 +41,8 @@ class DisplayConfig:
     fps: float = DMG_FPS
     title: str = "GBemu"
     max_instructions_per_frame: int = 200_000
+    profile_window: bool = False
+    profile_interval: int = 60
 
     def __post_init__(self) -> None:
         if self.scale < 1:
@@ -48,6 +51,8 @@ class DisplayConfig:
             raise ValueError("display fps must be positive")
         if self.max_instructions_per_frame < 1:
             raise ValueError("per-frame instruction limit must be positive")
+        if self.profile_interval < 1:
+            raise ValueError("profile interval must be positive")
 
 
 def button_for_key(keysym: str) -> str | None:
@@ -72,11 +77,19 @@ def framebuffer_to_tk_rows(framebuffer: list[list[int]], scale: int = 1) -> list
         raise ValueError("display scale must be at least 1")
 
     rows: list[str] = []
+    colors_by_shade = TK_DMG_COLORS
     for row in framebuffer:
-        colors = [_tk_color(shade) for shade in row for _ in range(scale)]
+        if scale == 1:
+            colors = [colors_by_shade[shade & 0x03] for shade in row]
+        else:
+            colors = [colors_by_shade[shade & 0x03] for shade in row for _ in range(scale)]
         row_text = "{" + " ".join(colors) + "}"
         rows.extend([row_text] * scale)
     return rows
+
+
+def framebuffer_to_tk_image_data(framebuffer: list[list[int]], scale: int = 1) -> str:
+    return " ".join(framebuffer_to_tk_rows(framebuffer, scale))
 
 
 class TkDisplay:
@@ -98,11 +111,18 @@ class TkDisplay:
         self._trace_sink = trace_sink
         self._start_frame = emulator.bus.ppu.frame_count
         self._root = None
+        self._source_image = None
         self._image = None
         self._label = None
         self._running = False
         self._paused = False
+        self._profile_frames = 0
+        self._profile_run_seconds = 0.0
+        self._profile_draw_seconds = 0.0
+        self._profile_total_seconds = 0.0
+        self._profile_report_started = time.perf_counter()
         self.emulator.set_buttons(self.pressed)
+        self.emulator.bus.apu.set_output_enabled(False)
 
     def run(self) -> None:
         try:
@@ -113,10 +133,14 @@ class TkDisplay:
         self._root = tk.Tk()
         self._root.title(self.config.title)
         self._root.resizable(False, False)
-        self._image = tk.PhotoImage(
-            width=SCREEN_WIDTH * self.config.scale,
-            height=SCREEN_HEIGHT * self.config.scale,
-        )
+        self._source_image = tk.PhotoImage(width=SCREEN_WIDTH, height=SCREEN_HEIGHT)
+        if self.config.scale == 1:
+            self._image = self._source_image
+        else:
+            self._image = tk.PhotoImage(
+                width=SCREEN_WIDTH * self.config.scale,
+                height=SCREEN_HEIGHT * self.config.scale,
+            )
         self._label = tk.Label(self._root, image=self._image)
         self._label.image = self._image
         self._label.pack()
@@ -137,6 +161,7 @@ class TkDisplay:
         if command == "reset":
             self.emulator.reset()
             self.emulator.set_buttons(self.pressed)
+            self.emulator.bus.apu.set_output_enabled(False)
             self._start_frame = self.emulator.bus.ppu.frame_count
             self._draw_frame()
             self._update_title()
@@ -172,23 +197,76 @@ class TkDisplay:
             return
 
         started = time.perf_counter()
+        run_elapsed = 0.0
+        draw_elapsed = 0.0
         if not self._paused:
+            run_started = time.perf_counter()
             self.emulator.run(
                 max_instructions=self.config.max_instructions_per_frame,
                 max_frames=1,
                 trace=self._trace_enabled,
                 trace_sink=self._trace_sink,
             )
+            run_elapsed = time.perf_counter() - run_started
+            draw_started = time.perf_counter()
             self._draw_frame()
+            draw_elapsed = time.perf_counter() - draw_started
         elapsed = time.perf_counter() - started
+        if not self._paused:
+            self._record_profile_frame(run_elapsed, draw_elapsed, elapsed)
         target = 1.0 / self.config.fps
         self._schedule_next_frame(max(1, int((target - elapsed) * 1000)))
 
     def _draw_frame(self) -> None:
         if self._image is None or self._label is None:
             return
-        for y, row in enumerate(framebuffer_to_tk_rows(self.emulator.bus.ppu.framebuffer, self.config.scale)):
-            self._image.put(row, to=(0, y))
+        source_image = self._source_image or self._image
+        source_image.put(
+            framebuffer_to_tk_image_data(self.emulator.bus.ppu.framebuffer),
+            to=(0, 0),
+        )
+        if self.config.scale > 1 and source_image is not self._image:
+            self._image.tk.call(
+                self._image,
+                "copy",
+                source_image,
+                "-zoom",
+                self.config.scale,
+                self.config.scale,
+            )
+
+    def _record_profile_frame(
+        self,
+        run_seconds: float,
+        draw_seconds: float,
+        total_seconds: float,
+    ) -> None:
+        if not self.config.profile_window:
+            return
+        self._profile_frames += 1
+        self._profile_run_seconds += run_seconds
+        self._profile_draw_seconds += draw_seconds
+        self._profile_total_seconds += total_seconds
+        if self._profile_frames < self.config.profile_interval:
+            return
+
+        now = time.perf_counter()
+        wall_seconds = now - self._profile_report_started
+        frames = self._profile_frames
+        print(
+            "window-profile "
+            f"frames={frames} "
+            f"run_ms={self._profile_run_seconds / frames * 1000:.2f} "
+            f"draw_ms={self._profile_draw_seconds / frames * 1000:.2f} "
+            f"active_ms={self._profile_total_seconds / frames * 1000:.2f} "
+            f"wall_fps={frames / wall_seconds if wall_seconds > 0 else 0.0:.2f}",
+            flush=True,
+        )
+        self._profile_frames = 0
+        self._profile_run_seconds = 0.0
+        self._profile_draw_seconds = 0.0
+        self._profile_total_seconds = 0.0
+        self._profile_report_started = now
 
     def _reached_frame_limit(self) -> bool:
         if self.max_frames is None:
@@ -231,5 +309,4 @@ def run_tk_display(
 
 
 def _tk_color(shade: int) -> str:
-    red, green, blue = DMG_GRAYSCALE[shade & 0x03]
-    return f"#{red:02x}{green:02x}{blue:02x}"
+    return TK_DMG_COLORS[shade & 0x03]

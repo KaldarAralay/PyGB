@@ -114,9 +114,10 @@ class CPU:
                 self._add_cycles(4)
                 return 4
 
-        pc_before = self.pc
-        raw, mnemonic = disassemble(self.bus, pc_before)
-        registers_before = self.format_registers()
+        if trace:
+            pc_before = self.pc
+            raw, mnemonic = disassemble(self.bus, pc_before)
+            registers_before = self.format_registers()
         self._begin_instruction_timing()
         opcode = self._fetch8()
         cycles = self._execute_opcode(opcode)

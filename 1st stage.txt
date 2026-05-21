@@ -1,0 +1,85 @@
+Build Milestone 1 of a DMG-only Game Boy emulator.
+
+Goal:
+Create a CPU/memory/test-ROM harness only. Do not implement graphics, sound, MBC banking, or full gameplay yet.
+
+Language:
+Python 3, preferably with a clean modular structure.
+
+Primary references:
+- Pan Docs: https://gbdev.io/pandocs/
+- Pan Docs GitHub: https://github.com/gbdev/pandocs
+- Opcode table: https://gbdev.io/gb-opcodes/optables/
+- Alternate opcode table: https://www.pastraiser.com/cpu/gameboy/gameboy_opcodes.html
+- Blargg test ROMs: https://github.com/retrio/gb-test-roms
+- Blargg downloadable tests: https://gbdev.gg8.se/files/roms/blargg-gb-tests/
+- Gameboy Doctor: https://robertheaton.com/gameboy-doctor/
+
+Milestone 1 requirements:
+
+1. ROM loading
+- Load a .gb file into cartridge ROM space.
+- Parse and print the cartridge title, ROM size, RAM size, cartridge type, and header checksum status.
+
+2. Memory bus
+Implement basic read/write behavior for:
+- 0000-7FFF cartridge ROM
+- 8000-9FFF VRAM placeholder
+- A000-BFFF external RAM placeholder
+- C000-DFFF work RAM
+- E000-FDFF echo RAM
+- FE00-FE9F OAM placeholder
+- FF00-FF7F IO registers
+- FF80-FFFE HRAM
+- FFFF interrupt enable register
+
+3. CPU core
+Implement the original Game Boy LR35902 / SM83 CPU:
+- Registers: A, F, B, C, D, E, H, L, SP, PC
+- Register pairs: AF, BC, DE, HL
+- Flags: Z, N, H, C
+- Fetch/decode/execute loop
+- Full normal opcode table
+- Full CB-prefixed opcode table
+- Correct instruction lengths
+- Correct flag behavior
+- Correct stack behavior
+- Correct jumps, calls, returns, restarts
+- HALT/STOP can be minimally stubbed at first, but should not crash.
+
+4. Serial output for test ROMs
+Implement enough serial IO for Blargg tests:
+- If FF02 is written with 0x81, print the character stored in FF01 to stdout.
+- This should allow cpu_instrs.gb to print test progress/results.
+
+5. Debugging support
+Add:
+- Step mode
+- Trace logging mode
+- Disassembler-style output per instruction:
+  PC, opcode bytes, mnemonic, registers, SP, flags, cycles
+- Optional max instruction count to prevent infinite loops.
+
+6. Test target
+The first real target is:
+- Blargg cpu_instrs individual tests
+- Then cpu_instrs.gb combined test
+
+Success condition:
+Running Blargg cpu_instrs should eventually print successful serial output or, if not passing yet, produce a trace log compatible enough to compare against Gameboy Doctor.
+
+Project structure suggestion:
+- main.py
+- cartridge.py
+- bus.py
+- cpu.py
+- opcodes.py
+- debug.py
+- tests/
+- roms/
+
+Do not build a pygame window yet.
+Do not implement the PPU yet.
+Do not try to run Pokémon yet.
+Do not add audio yet.
+Focus entirely on CPU correctness and test-ROM output.

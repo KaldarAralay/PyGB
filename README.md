@@ -72,6 +72,18 @@ Run with a Tkinter display window and keyboard input:
 python main.py path\to\rom.gb --window --scale 3
 ```
 
+Profile windowed frame pacing and framebuffer upload time:
+
+```powershell
+python main.py path\to\rom.gb --window --scale 3 --profile-window
+```
+
+Benchmark raw headless emulation speed for a fixed frame count:
+
+```powershell
+Measure-Command { .\.tools\python-3.12.4-embed-amd64\python.exe -B main.py path\to\rom.gb --frames 300 --max-instructions 0 }
+```
+
 Load and save cartridge RAM and MBC3 RTC state around a run:
 
 ```powershell

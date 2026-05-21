@@ -914,6 +914,18 @@ class CartridgeBusTests(unittest.TestCase):
         self.assertEqual(bus.read8(0xFF05), 0x42)
         self.assertEqual(bus.read8(0xFF0F) & 0x04, 0x04)
 
+    def test_enabled_timer_counts_bulk_falling_edges_without_overflow(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+
+        bus.write8(0xFF04, 0x00)
+        bus.write8(0xFF05, 0x10)
+        bus.write8(0xFF07, 0x05)
+
+        bus.tick(80)
+
+        self.assertEqual(bus.read8(0xFF05), 0x15)
+        self.assertEqual(bus.read8(0xFF04), 0x00)
+
     def test_timer_uses_div_falling_edges_for_div_and_tac_writes(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
 

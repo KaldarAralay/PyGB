@@ -328,6 +328,29 @@ class Bus:
         self.interrupt_flags = self.interrupt_flags | 0x08
 
     def _tick_system_counter(self, cycles: int) -> None:
+        if (
+            not self._tima_reload_delay
+            and not self._oam_dma_active
+            and not self._oam_dma_requested
+        ):
+            tac = self.io[0x07]
+            if not tac & 0x04:
+                self._system_counter = (self._system_counter + cycles) & 0xFFFF
+                self.io[0x04] = (self._system_counter >> 8) & 0xFF
+                self.ppu.tick(cycles)
+                return
+
+            bit = (9, 3, 5, 7)[tac & 0x03]
+            period = 1 << (bit + 1)
+            edge_count = (self._system_counter + cycles) // period - self._system_counter // period
+            if self.io[0x05] + edge_count <= 0xFF:
+                self._system_counter = (self._system_counter + cycles) & 0xFFFF
+                self.io[0x04] = (self._system_counter >> 8) & 0xFF
+                if edge_count:
+                    self.io[0x05] = (self.io[0x05] + edge_count) & 0xFF
+                self.ppu.tick(cycles)
+                return
+
         for _ in range(cycles):
             self._tick_tima_reload_delay()
             old_signal = self._timer_signal()

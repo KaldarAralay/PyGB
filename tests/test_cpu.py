@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from bus import Bus, SERIAL_INTERNAL_TRANSFER_CYCLES
 from cartridge import Cartridge, compute_header_checksum
@@ -24,6 +25,28 @@ def make_cpu(program: bytes) -> tuple[CPU, Bus]:
 
 
 class CPUTests(unittest.TestCase):
+    def test_step_skips_trace_formatting_when_trace_disabled(self) -> None:
+        cpu, _ = make_cpu(bytes([0x00]))
+
+        with patch("cpu.disassemble") as disassemble_mock, patch.object(
+            cpu, "format_registers", wraps=cpu.format_registers
+        ) as format_registers_mock:
+            cpu.step(trace=False)
+
+        disassemble_mock.assert_not_called()
+        format_registers_mock.assert_not_called()
+        self.assertIsNone(cpu.last_trace)
+
+    def test_step_collects_trace_when_trace_enabled(self) -> None:
+        cpu, _ = make_cpu(bytes([0x00]))
+
+        cpu.step(trace=True)
+
+        self.assertIsNotNone(cpu.last_trace)
+        self.assertEqual(cpu.last_trace.pc, 0x0100)
+        self.assertEqual(cpu.last_trace.raw, [0x00])
+        self.assertEqual(cpu.last_trace.mnemonic, "NOP")
+
     def test_load_add_and_flags(self) -> None:
         cpu, _ = make_cpu(bytes([0x3E, 0x0F, 0xC6, 0x01, 0xCE, 0xF0]))
 
