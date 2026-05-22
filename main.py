@@ -5,6 +5,7 @@ from pathlib import Path
 
 from apu import DEFAULT_SAMPLE_RATE
 from audio import WavAudioWriter
+from button_script import ButtonScript, load_button_script, parse_button_script
 from debug import TraceLogger
 from display import DisplayConfig, run_tk_display
 from emulator import Emulator
@@ -76,6 +77,18 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Comma-separated held buttons for headless runs: a,b,select,start,right,left,up,down",
     )
+    parser.add_argument(
+        "--button-script",
+        help=(
+            "Frame-based button script entries: frame:buttons[:duration], "
+            "using + between buttons, e.g. 120:start:8,240:a:6"
+        ),
+    )
+    parser.add_argument(
+        "--button-script-file",
+        type=Path,
+        help="Read frame-based button script entries from a text file",
+    )
     parser.add_argument("--frames", type=int, help="Stop after this many completed PPU frames")
     parser.add_argument("--step", action="store_true", help="Prompt before each instruction")
     parser.add_argument(
@@ -86,6 +99,86 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-pc", type=lambda value: int(value, 0))
     parser.add_argument("--cold-boot-registers", action="store_true", help="Start registers at zero")
     return parser.parse_args()
+
+
+def build_button_script(args: argparse.Namespace) -> ButtonScript | None:
+    scripts: list[ButtonScript] = []
+    try:
+        if args.button_script:
+            scripts.append(parse_button_script(args.button_script))
+        if args.button_script_file is not None:
+            scripts.append(load_button_script(args.button_script_file))
+    except OSError as exc:
+        raise SystemExit(f"Could not read button script: {exc}") from exc
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    events = []
+    for script in scripts:
+        events.extend(script.events)
+    if not events:
+        return None
+    return ButtonScript(list(events))
+
+
+def run_headless(
+    emulator: Emulator,
+    *,
+    frames: int | None,
+    max_instructions: int | None,
+    stop_on_serial_result: bool,
+    trace: bool,
+    trace_sink,
+    step_mode: bool,
+    audio_sink,
+    initial_buttons: set[str],
+    button_script: ButtonScript | None,
+) -> None:
+    if button_script is None or frames is None:
+        if button_script is not None:
+            emulator.set_buttons(button_script.buttons_for_frame(0, initial_buttons))
+        emulator.run(
+            max_instructions=max_instructions,
+            max_frames=frames,
+            stop_on_serial_result=stop_on_serial_result,
+            trace=trace,
+            trace_sink=trace_sink,
+            step_mode=step_mode,
+            audio_sink=audio_sink,
+        )
+        return
+
+    start_frame = emulator.bus.ppu.frame_count
+    start_instructions = emulator.cpu.instructions
+    while emulator.bus.ppu.frame_count - start_frame < frames:
+        if max_instructions is None:
+            frame_instruction_limit = None
+        else:
+            consumed = emulator.cpu.instructions - start_instructions
+            frame_instruction_limit = max_instructions - consumed
+            if frame_instruction_limit <= 0:
+                break
+
+        relative_frame = emulator.bus.ppu.frame_count - start_frame
+        emulator.set_buttons(
+            button_script.buttons_for_frame(relative_frame, initial_buttons)
+        )
+        before_frame = emulator.bus.ppu.frame_count
+        emulator.run(
+            max_instructions=frame_instruction_limit,
+            max_frames=1,
+            stop_on_serial_result=stop_on_serial_result,
+            trace=trace,
+            trace_sink=trace_sink,
+            step_mode=step_mode,
+            audio_sink=audio_sink,
+        )
+        if stop_on_serial_result and (
+            "Passed" in emulator.bus.serial_text or "Failed" in emulator.bus.serial_text
+        ):
+            break
+        if emulator.bus.ppu.frame_count == before_frame:
+            break
 
 
 def main() -> int:
@@ -112,6 +205,7 @@ def main() -> int:
         raise SystemExit("--max-instructions must be non-negative")
     if args.frames is not None and args.frames < 0:
         raise SystemExit("--frames must be non-negative")
+    button_script = build_button_script(args)
     emulator.bus.apu.set_sample_rate(args.audio_sample_rate)
     if args.save_file is not None:
         emulator.load_save_file(args.save_file)
@@ -150,6 +244,7 @@ def main() -> int:
                         audio_capture_path=args.capture_live_audio,
                     ),
                     initial_buttons=initial_buttons,
+                    button_script=button_script,
                     max_frames=args.frames,
                     trace=trace_enabled,
                     trace_sink=logger.write if trace_enabled else None,
@@ -166,14 +261,17 @@ def main() -> int:
             )
             try:
                 audio_sink = audio_writer.write if audio_writer is not None else None
-                emulator.run(
+                run_headless(
+                    emulator,
                     max_instructions=max_instructions,
-                    max_frames=args.frames,
+                    frames=args.frames,
                     stop_on_serial_result=args.stop_on_serial_result,
                     trace=trace_enabled,
                     trace_sink=logger.write if trace_enabled else None,
                     step_mode=args.step,
                     audio_sink=audio_sink,
+                    initial_buttons=initial_buttons,
+                    button_script=button_script,
                 )
             finally:
                 if audio_writer is not None:

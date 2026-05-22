@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from apu import DEFAULT_SAMPLE_RATE
 from audio import AudioPlaybackStats, BufferedAudioPlayer, WavAudioWriter
+from button_script import ButtonScript
 from joypad import BUTTON_BITS
 from ppu import DMG_GRAYSCALE, SCREEN_HEIGHT, SCREEN_WIDTH
 
@@ -195,6 +196,7 @@ class TkDisplay:
         *,
         config: DisplayConfig | None = None,
         initial_buttons: set[str] | None = None,
+        button_script: ButtonScript | None = None,
         max_frames: int | None = None,
         trace: bool = False,
         trace_sink=None,
@@ -202,6 +204,7 @@ class TkDisplay:
         self.emulator = emulator
         self.config = config or DisplayConfig()
         self.pressed = set(initial_buttons or set())
+        self.button_script = button_script
         self.max_frames = max_frames
         self._trace_enabled = trace
         self._trace_sink = trace_sink
@@ -364,6 +367,7 @@ class TkDisplay:
         audio_elapsed = 0.0
         audio_stats = None
         if not self._paused:
+            self._apply_scripted_buttons()
             run_started = time.perf_counter()
             cpu = getattr(self.emulator, "cpu", None)
             cpu_instructions_before = getattr(cpu, "instructions", 0)
@@ -433,6 +437,12 @@ class TkDisplay:
                 self.config.scale,
                 self.config.scale,
             )
+
+    def _apply_scripted_buttons(self) -> None:
+        if self.button_script is None:
+            return
+        frame = self.emulator.bus.ppu.frame_count - self._start_frame
+        self.emulator.set_buttons(self.button_script.buttons_for_frame(frame, self.pressed))
 
     def _record_profile_frame(
         self,
@@ -840,6 +850,7 @@ def run_tk_display(
     *,
     config: DisplayConfig | None = None,
     initial_buttons: set[str] | None = None,
+    button_script: ButtonScript | None = None,
     max_frames: int | None = None,
     trace: bool = False,
     trace_sink=None,
@@ -848,6 +859,7 @@ def run_tk_display(
         emulator,
         config=config,
         initial_buttons=initial_buttons,
+        button_script=button_script,
         max_frames=max_frames,
         trace=trace,
         trace_sink=trace_sink,

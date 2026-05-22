@@ -313,6 +313,17 @@ class CPU:
                 or pc == 0x25D8
                 or pc == 0x276D
                 or pc == 0x36E2
+                or pc == 0x3E75
+                or pc == 0x3E8D
+                or pc == 0x01A7
+                or pc == 0x5A5F
+                or pc == 0x4000
+                or pc == 0x3C04
+                or pc == 0x019A
+                or pc == 0x38F6
+                or pc == 0x374F
+                or pc == 0x3872
+                or pc == 0x3AD9
             ):
                 hot_steps = self._fast_forward_hot_rom_sequence(
                     opcode=opcode,
@@ -854,7 +865,1041 @@ class CPU:
             (0x7A, 0x22, 0x0B, 0x78, 0xB1, 0x20, 0xF9),
         ):
             return self._fast_forward_hot_fill_loop(max_instructions, steps)
+        if opcode == 0xF5 and pc == 0x3E75 and self._matches_bytes(
+            pc,
+            (0xF5, 0x3E, 0x13, 0xE0, 0xB8, 0xEA, 0x00, 0x20, 0xCD, 0x49, 0x7E),
+        ):
+            return self._fast_forward_pokemon_predef_call(max_instructions, steps)
+        if opcode == 0x21 and pc == 0x374F and self._matches_bytes(
+            pc,
+            (0x21, 0x2A, 0xC0, 0xAF, 0xB6, 0x23, 0xB6, 0x23, 0x23, 0xB6, 0x20, 0xF4),
+        ):
+            return self._fast_forward_pokemon_wram_flag_wait_loop(max_instructions, steps)
+        if (
+            opcode == 0xE5
+            and pc == 0x3872
+            and self._matches_bytes(
+                pc,
+                (
+                    0xE5,
+                    0xFA,
+                    0x9B,
+                    0xD0,
+                    0xA7,
+                    0x28,
+                    0x03,
+                    0xCD,
+                    0xC6,
+                    0x56,
+                    0x21,
+                    0xF2,
+                    0xC4,
+                    0xCD,
+                    0x04,
+                    0x3C,
+                    0xE1,
+                    0xCD,
+                    0x31,
+                    0x38,
+                    0x3E,
+                    0x2D,
+                    0xCD,
+                    0x6D,
+                    0x3E,
+                    0xF0,
+                    0xB5,
+                    0xE6,
+                    0x03,
+                    0x28,
+                    0xE1,
+                ),
+            )
+        ):
+            return self._fast_forward_pokemon_text_wait_loop(max_instructions, steps)
+        if (
+            opcode == 0xE5
+            and pc == 0x3AD9
+            and self._matches_bytes(
+                pc,
+                (
+                    0xE5,
+                    0xFA,
+                    0x9B,
+                    0xD0,
+                    0xA7,
+                    0x28,
+                    0x08,
+                    0x06,
+                    0x1C,
+                    0x21,
+                    0xFF,
+                    0x56,
+                    0xCD,
+                    0xD6,
+                    0x35,
+                    0xE1,
+                    0xCD,
+                    0x31,
+                    0x38,
+                    0xF0,
+                    0xB5,
+                    0xA7,
+                    0x20,
+                    0x1B,
+                    0xE5,
+                    0x21,
+                    0x8E,
+                    0xC4,
+                    0xCD,
+                    0x04,
+                    0x3C,
+                    0xE1,
+                    0xFA,
+                    0x34,
+                    0xCC,
+                    0x3D,
+                    0x28,
+                    0x02,
+                    0x18,
+                    0xD8,
+                ),
+            )
+        ):
+            return self._fast_forward_pokemon_text_wait_loop_alt(max_instructions, steps)
+        if opcode == 0xF1 and pc in {0x01A7, 0x3E8D} and self._matches_bytes(
+            pc,
+            (0xF1, 0xE0, 0xB8, 0xEA, 0x00, 0x20, 0xC9),
+        ):
+            return self._fast_forward_pokemon_bank_restore_return(max_instructions, steps)
+        if (
+            opcode == 0xFA
+            and pc == 0x5A5F
+            and self._fast_rom_is_mbc3
+            and self._fast_rom_cartridge.mbc3_rom_bank % self._fast_rom_cartridge.rom_bank_count == 1
+            and self._matches_bytes(
+                pc,
+                (0xFA, 0x2B, 0xD1, 0xFE, 0x02, 0x28, 0x0F, 0xFE, 0x03, 0x28, 0x0B, 0xFE, 0x05, 0xC0),
+            )
+        ):
+            return self._fast_forward_pokemon_text_predef_return(max_instructions, steps)
+        if (
+            opcode == 0xCD
+            and pc == 0x38F6
+            and self._matches_bytes(
+                pc,
+                (
+                    0xCD,
+                    0x9A,
+                    0x01,
+                    0xF0,
+                    0xB4,
+                    0xCB,
+                    0x47,
+                    0x28,
+                    0x02,
+                    0x18,
+                    0x04,
+                    0xCB,
+                    0x4F,
+                    0x28,
+                    0x05,
+                    0xCD,
+                    0xAF,
+                    0x20,
+                    0x18,
+                    0x05,
+                    0xF0,
+                    0xD5,
+                    0xA7,
+                    0x20,
+                    0xE7,
+                ),
+            )
+            and self._matches_bytes(
+                0x019A,
+                (
+                    0xF0,
+                    0xB8,
+                    0xF5,
+                    0x3E,
+                    0x03,
+                    0xE0,
+                    0xB8,
+                    0xEA,
+                    0x00,
+                    0x20,
+                    0xCD,
+                    0x00,
+                    0x40,
+                    0xF1,
+                    0xE0,
+                    0xB8,
+                    0xEA,
+                    0x00,
+                    0x20,
+                    0xC9,
+                ),
+            )
+        ):
+            return self._fast_forward_pokemon_joypad_poll_loop(max_instructions, steps)
+        if (
+            opcode == 0xF0
+            and pc == 0x019A
+            and self._matches_bytes(
+                pc,
+                (
+                    0xF0,
+                    0xB8,
+                    0xF5,
+                    0x3E,
+                    0x03,
+                    0xE0,
+                    0xB8,
+                    0xEA,
+                    0x00,
+                    0x20,
+                    0xCD,
+                    0x00,
+                    0x40,
+                    0xF1,
+                    0xE0,
+                    0xB8,
+                    0xEA,
+                    0x00,
+                    0x20,
+                    0xC9,
+                ),
+            )
+        ):
+            return self._fast_forward_pokemon_joypad_status_call(max_instructions, steps)
+        if (
+            opcode == 0xF0
+            and pc == 0x4000
+            and self._fast_rom_is_mbc3
+            and self._fast_rom_cartridge.mbc3_rom_bank % self._fast_rom_cartridge.rom_bank_count == 3
+            and self._matches_bytes(
+                pc,
+                (
+                    0xF0,
+                    0xF8,
+                    0xFE,
+                    0x0F,
+                    0xCA,
+                    0x3C,
+                    0x40,
+                    0x47,
+                    0xF0,
+                    0xB1,
+                    0x5F,
+                    0xA8,
+                    0x57,
+                    0xA3,
+                    0xE0,
+                    0xB2,
+                    0x7A,
+                    0xA0,
+                    0xE0,
+                    0xB3,
+                    0x78,
+                    0xE0,
+                    0xB1,
+                    0xFA,
+                    0x30,
+                    0xD7,
+                    0xCB,
+                    0x6F,
+                    0x20,
+                    0x16,
+                    0xF0,
+                    0xB1,
+                    0xE0,
+                    0xB4,
+                    0xFA,
+                    0x6B,
+                    0xCD,
+                    0xA7,
+                    0xC8,
+                ),
+            )
+        ):
+            return self._fast_forward_pokemon_joypad_status_return(max_instructions, steps)
+        if (
+            opcode == 0x7E
+            and pc == 0x3C04
+            and self._matches_bytes(pc, (0x7E, 0x47, 0x3E, 0xEE, 0xB8, 0x20, 0x18))
+            and self._matches_bytes(0x3C23, (0xF0, 0x8B, 0xA7, 0xC8, 0x3D, 0xE0, 0x8B, 0xC0))
+        ):
+            return self._fast_forward_pokemon_text_delay_return(max_instructions, steps)
         return 0
+
+    def _fast_forward_pokemon_predef_call(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        cycles = 412
+        if (
+            self._ime_delay
+            or self.halted
+            or self.stopped
+            or self._halt_bug
+            or not self._fast_rom_is_mbc3
+            or not self._can_batch_direct_memory_cycles()
+            or self._fast_forward_safe_cycles(cycles) < cycles
+        ):
+            return 0
+
+        sp = self.sp
+        stack_addresses = (
+            (sp - 1) & 0xFFFF,
+            (sp - 2) & 0xFFFF,
+            (sp - 3) & 0xFFFF,
+            (sp - 4) & 0xFFFF,
+        )
+        if any(not self._is_direct_fast_address(address) for address in stack_addresses):
+            return 0
+
+        bus = self.bus
+        wram = bus.wram
+        predef_id = wram[0xCC4E - 0xC000]
+        table_offset = 0x13 * 0x4000 + (0x7E79 - 0x4000) + predef_id * 3
+        data = self._fast_rom_data
+        if table_offset + 2 >= self._fast_rom_data_len:
+            return 0
+
+        target_bank = data[table_offset]
+        target_low = data[table_offset + 1]
+        target_high = data[table_offset + 2]
+        target = target_low | (target_high << 8)
+        table_index = predef_id * 3
+        table_low = table_index & 0xFF
+        table_high = table_index >> 8
+        instruction_count = 44 if table_high else 43
+
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if remaining_instructions < instruction_count:
+            return 0
+
+        wram[0xCC4F - 0xC000] = self.h
+        wram[0xCC50 - 0xC000] = self.l
+        wram[0xCC51 - 0xC000] = self.d
+        wram[0xCC52 - 0xC000] = self.e
+        wram[0xCC53 - 0xC000] = self.b
+        wram[0xCC54 - 0xC000] = self.c
+        wram[0xD0B7 - 0xC000] = target_bank
+
+        self._write8_direct_fast((sp - 1) & 0xFFFF, self.a)
+        self._write8_direct_fast((sp - 2) & 0xFFFF, self.f & 0xF0)
+        self._write8_direct_fast((sp - 3) & 0xFFFF, 0x3E)
+        self._write8_direct_fast((sp - 4) & 0xFFFF, 0x8D)
+        self.sp = (sp - 4) & 0xFFFF
+
+        bus.hram[0xFFB8 - 0xFF80] = target_bank & 0xFF
+        bus.mapper.write_rom_control(0x2000, target_bank)
+
+        hl_before_add = 0x7E79
+        de_for_table = (table_high << 8) | table_low
+        add_result = hl_before_add + de_for_table
+        self.f = (
+            (FLAG_Z if table_low == 0 else 0)
+            | (FLAG_H if ((hl_before_add & 0x0FFF) + (de_for_table & 0x0FFF)) > 0x0FFF else 0)
+            | (FLAG_C if add_result > 0xFFFF else 0)
+        )
+        self.a = target_bank & 0xFF
+        self.d = 0x3E
+        self.e = 0x8D
+        self.h = target_high
+        self.l = target_low
+        self.pc = target
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_pokemon_wram_flag_wait_loop(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        cycles_per_iteration = 76
+        instructions_per_iteration = 9
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < instructions_per_iteration
+            or not self._can_batch_direct_memory_cycles()
+        ):
+            return 0
+
+        wram = self.bus.wram
+        value = (
+            wram[0xC02A - 0xC000]
+            | wram[0xC02B - 0xC000]
+            | wram[0xC02D - 0xC000]
+        )
+        if value == 0:
+            return 0
+
+        max_iterations = min(
+            remaining_instructions // instructions_per_iteration,
+            4096 // cycles_per_iteration,
+        )
+        safe_cycles = self._fast_forward_safe_cycles(max_iterations * cycles_per_iteration)
+        iterations = safe_cycles // cycles_per_iteration
+        if iterations <= 0:
+            return 0
+
+        self.a = value & 0xFF
+        self.f = 0
+        self.h = 0xC0
+        self.l = 0x2D
+        self.pc = 0x374F
+        instruction_count = iterations * instructions_per_iteration
+        self.instructions += instruction_count
+        self._add_cycles(iterations * cycles_per_iteration)
+        return instruction_count
+
+    def _fast_forward_pokemon_text_wait_loop(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        instruction_count = 132
+        cycles = 1420
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < instruction_count
+            or not self._fast_rom_is_mbc3
+            or not self._can_batch_direct_memory_cycles()
+            or self._fast_forward_safe_cycles(cycles) < cycles
+            or not self._matches_bytes(0x3831, (0xCD, 0x9A, 0x01, 0xF0, 0xB7, 0xA7, 0xF0, 0xB3))
+            or not self._matches_bytes(0x3849, (0xF0, 0xD5, 0xA7, 0x28, 0x04, 0xAF, 0xE0, 0xB5, 0xC9))
+            or not self._matches_bytes(0x3C04, (0x7E, 0x47, 0x3E, 0xEE, 0xB8, 0x20, 0x18))
+            or not self._matches_bytes(0x3C23, (0xF0, 0x8B, 0xA7, 0xC8, 0x3D, 0xE0, 0x8B, 0xC0))
+            or not self._matches_bytes(0x3E6D, (0xEA, 0x4E, 0xCC, 0xF0, 0xB8, 0xEA, 0x12, 0xCF))
+        ):
+            return 0
+
+        sp = self.sp
+        stack_addresses = tuple((sp + offset) & 0xFFFF for offset in range(-8, 2))
+        if any(not self._is_direct_fast_address(address) for address in stack_addresses):
+            return 0
+
+        bus = self.bus
+        wram = bus.wram
+        hram = bus.hram
+        if wram[0xD09B - 0xC000] != 0:
+            return 0
+        tile_value = self._read8_direct_fast(0xC4F2)
+        delay_counter = hram[0xFF8B - 0xFF80]
+        if tile_value is None or tile_value == 0xEE or delay_counter <= 1:
+            return 0
+
+        next_buttons = hram[0xFFF8 - 0xFF80]
+        old_buttons = hram[0xFFB1 - 0xFF80]
+        changed = next_buttons ^ old_buttons
+        pressed = changed & next_buttons
+        if (
+            next_buttons == 0x0F
+            or pressed != 0
+            or hram[0xFFB7 - 0xFF80] != 0
+            or hram[0xFFD5 - 0xFF80] == 0
+            or wram[0xD730 - 0xC000] & 0x20
+            or wram[0xCD6B - 0xC000] != 0
+            or wram[0xD12B - 0xC000] in {0x02, 0x03, 0x05}
+        ):
+            return 0
+
+        predef_id = 0x2D
+        table_offset = 0x13 * 0x4000 + (0x7E79 - 0x4000) + predef_id * 3
+        data = self._fast_rom_data
+        if table_offset + 2 >= self._fast_rom_data_len:
+            return 0
+        target_bank = data[table_offset]
+        target_low = data[table_offset + 1]
+        target_high = data[table_offset + 2]
+        target = target_low | (target_high << 8)
+        target_offset = target_bank * 0x4000 + (target - 0x4000)
+        target_bytes = (
+            0xFA,
+            0x2B,
+            0xD1,
+            0xFE,
+            0x02,
+            0x28,
+            0x0F,
+            0xFE,
+            0x03,
+            0x28,
+            0x0B,
+            0xFE,
+            0x05,
+            0xC0,
+        )
+        if (
+            target_bank != 0x01
+            or target != 0x5A5F
+            or target_offset + len(target_bytes) > self._fast_rom_data_len
+            or any(data[target_offset + index] != value for index, value in enumerate(target_bytes))
+        ):
+            return 0
+
+        old_bank = hram[0xFFB8 - 0xFF80]
+        initial_h = self.h
+        initial_l = self.l
+        hram[0xFF8B - 0xFF80] = (delay_counter - 1) & 0xFF
+        hram[0xFFB2 - 0xFF80] = next_buttons & old_buttons
+        hram[0xFFB3 - 0xFF80] = pressed
+        hram[0xFFB1 - 0xFF80] = next_buttons
+        hram[0xFFB4 - 0xFF80] = next_buttons
+        hram[0xFFB5 - 0xFF80] = 0
+        hram[0xFFB8 - 0xFF80] = old_bank
+
+        wram[0xCC4E - 0xC000] = predef_id
+        wram[0xCC4F - 0xC000] = initial_h
+        wram[0xCC50 - 0xC000] = initial_l
+        wram[0xCC51 - 0xC000] = changed
+        wram[0xCC52 - 0xC000] = old_buttons
+        wram[0xCC53 - 0xC000] = next_buttons
+        wram[0xCC54 - 0xC000] = self.c
+        wram[0xCF12 - 0xC000] = old_bank
+        wram[0xD0B7 - 0xC000] = target_bank
+        bus.mapper.write_rom_control(0x2000, old_bank)
+
+        self.a = 0
+        self.f = FLAG_Z | FLAG_H
+        self.b = next_buttons
+        self.d = 0x3E
+        self.e = 0x8D
+        self.h = target_high
+        self.l = target_low
+        self.pc = 0x3872
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_pokemon_text_wait_loop_alt(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        cycles_per_iteration = 796
+        instructions_per_iteration = 73
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < instructions_per_iteration
+            or not self._fast_rom_is_mbc3
+            or not self._can_batch_direct_memory_cycles()
+            or not self._matches_bytes(0x3831, (0xCD, 0x9A, 0x01, 0xF0, 0xB7, 0xA7, 0xF0, 0xB3))
+            or not self._matches_bytes(0x3849, (0xF0, 0xD5, 0xA7, 0x28, 0x04, 0xAF, 0xE0, 0xB5, 0xC9))
+            or not self._matches_bytes(
+                0x019A,
+                (
+                    0xF0,
+                    0xB8,
+                    0xF5,
+                    0x3E,
+                    0x03,
+                    0xE0,
+                    0xB8,
+                    0xEA,
+                    0x00,
+                    0x20,
+                    0xCD,
+                    0x00,
+                    0x40,
+                    0xF1,
+                    0xE0,
+                    0xB8,
+                    0xEA,
+                    0x00,
+                    0x20,
+                    0xC9,
+                ),
+            )
+            or not self._matches_bytes(0x3C04, (0x7E, 0x47, 0x3E, 0xEE, 0xB8, 0x20, 0x18))
+            or not self._matches_bytes(0x3C23, (0xF0, 0x8B, 0xA7, 0xC8, 0x3D, 0xE0, 0x8B, 0xC0))
+        ):
+            return 0
+
+        bank3_offset = 3 * 0x4000
+        bank3_bytes = (
+            0xF0,
+            0xF8,
+            0xFE,
+            0x0F,
+            0xCA,
+            0x3C,
+            0x40,
+            0x47,
+            0xF0,
+            0xB1,
+            0x5F,
+            0xA8,
+            0x57,
+            0xA3,
+            0xE0,
+            0xB2,
+            0x7A,
+            0xA0,
+            0xE0,
+            0xB3,
+            0x78,
+            0xE0,
+            0xB1,
+            0xFA,
+            0x30,
+            0xD7,
+            0xCB,
+            0x6F,
+            0x20,
+            0x16,
+            0xF0,
+            0xB1,
+            0xE0,
+            0xB4,
+            0xFA,
+            0x6B,
+            0xCD,
+            0xA7,
+            0xC8,
+        )
+        data = self._fast_rom_data
+        if bank3_offset + len(bank3_bytes) > self._fast_rom_data_len or any(
+            data[bank3_offset + index] != value for index, value in enumerate(bank3_bytes)
+        ):
+            return 0
+
+        sp = self.sp
+        stack_addresses = tuple((sp + offset) & 0xFFFF for offset in range(-8, 2))
+        if any(not self._is_direct_fast_address(address) for address in stack_addresses):
+            return 0
+
+        bus = self.bus
+        wram = bus.wram
+        hram = bus.hram
+        if wram[0xD09B - 0xC000] != 0:
+            return 0
+
+        tile_value = self._read8_direct_fast(0xC48E)
+        cc34 = wram[0xCC34 - 0xC000]
+        if (
+            tile_value is None
+            or tile_value == 0xEE
+            or hram[0xFF8B - 0xFF80] != 0
+            or cc34 == 1
+        ):
+            return 0
+
+        next_buttons = hram[0xFFF8 - 0xFF80]
+        old_buttons = hram[0xFFB1 - 0xFF80]
+        changed = next_buttons ^ old_buttons
+        pressed = changed & next_buttons
+        if (
+            next_buttons == 0x0F
+            or pressed != 0
+            or hram[0xFFB7 - 0xFF80] != 0
+            or hram[0xFFD5 - 0xFF80] == 0
+            or wram[0xD730 - 0xC000] & 0x20
+            or wram[0xCD6B - 0xC000] != 0
+        ):
+            return 0
+
+        max_iterations = min(
+            remaining_instructions // instructions_per_iteration,
+            4096 // cycles_per_iteration,
+        )
+        safe_cycles = self._fast_forward_safe_cycles(max_iterations * cycles_per_iteration)
+        iterations = safe_cycles // cycles_per_iteration
+        if iterations <= 0:
+            return 0
+
+        final_changed = changed
+        final_old_buttons = old_buttons
+        if iterations > 1:
+            final_changed = 0
+            final_old_buttons = next_buttons
+
+        self._write8_direct_fast((sp - 1) & 0xFFFF, self.h)
+        self._write8_direct_fast((sp - 2) & 0xFFFF, self.l)
+
+        hram[0xFFB2 - 0xFF80] = next_buttons if iterations > 1 else next_buttons & old_buttons
+        hram[0xFFB3 - 0xFF80] = 0 if iterations > 1 else pressed
+        hram[0xFFB1 - 0xFF80] = next_buttons
+        hram[0xFFB4 - 0xFF80] = next_buttons
+        hram[0xFFB5 - 0xFF80] = 0
+        old_bank = hram[0xFFB8 - 0xFF80]
+        if self._fast_rom_cartridge.mbc3_rom_bank != old_bank:
+            bus.mapper.write_rom_control(0x2000, old_bank)
+
+        dec_result = (cc34 - 1) & 0xFF
+        self.a = dec_result
+        self.b = tile_value
+        self.d = final_changed
+        self.e = final_old_buttons
+        self.f = (
+            FLAG_N
+            | (FLAG_Z if dec_result == 0 else 0)
+            | (FLAG_H if (cc34 & 0x0F) == 0 else 0)
+        )
+        self.pc = 0x3AD9
+        instruction_count = iterations * instructions_per_iteration
+        self.instructions += instruction_count
+        self._add_cycles(iterations * cycles_per_iteration)
+        return instruction_count
+
+    def _fast_forward_pokemon_bank_restore_return(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        instruction_count = 4
+        cycles = 56
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < instruction_count
+            or not self._fast_rom_is_mbc3
+            or not self._can_batch_direct_memory_cycles()
+            or self._fast_forward_safe_cycles(cycles) < cycles
+        ):
+            return 0
+
+        sp = self.sp
+        stack_addresses = tuple((sp + offset) & 0xFFFF for offset in range(4))
+        if any(not self._is_direct_fast_address(address) for address in stack_addresses):
+            return 0
+        popped_f = self._read8_direct_fast(stack_addresses[0])
+        popped_a = self._read8_direct_fast(stack_addresses[1])
+        return_low = self._read8_direct_fast(stack_addresses[2])
+        return_high = self._read8_direct_fast(stack_addresses[3])
+        if None in {popped_f, popped_a, return_low, return_high}:
+            return 0
+
+        bank = popped_a & 0xFF
+        self.f = popped_f & 0xF0
+        self.a = bank
+        self.bus.hram[0xFFB8 - 0xFF80] = bank
+        self.bus.mapper.write_rom_control(0x2000, bank)
+        self.sp = (sp + 4) & 0xFFFF
+        self.pc = (return_low | (return_high << 8)) & 0xFFFF
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_pokemon_text_predef_return(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        instruction_count = 7
+        cycles = 76
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < instruction_count
+            or not self._can_batch_direct_memory_cycles()
+            or self._fast_forward_safe_cycles(cycles) < cycles
+        ):
+            return 0
+
+        value = self._read8_direct_fast(0xD12B)
+        if value is None or value in {0x02, 0x03, 0x05}:
+            return 0
+        sp = self.sp
+        sp_next = (sp + 1) & 0xFFFF
+        if not self._is_direct_fast_address(sp) or not self._is_direct_fast_address(sp_next):
+            return 0
+        return_low = self._read8_direct_fast(sp)
+        return_high = self._read8_direct_fast(sp_next)
+        if return_low is None or return_high is None:
+            return 0
+
+        self.a = value
+        self.f = (
+            FLAG_N
+            | (FLAG_Z if value == 0x05 else 0)
+            | (FLAG_H if (value & 0x0F) < 0x05 else 0)
+            | (FLAG_C if value < 0x05 else 0)
+        )
+        self.sp = (sp + 2) & 0xFFFF
+        self.pc = (return_low | (return_high << 8)) & 0xFFFF
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_pokemon_joypad_poll_loop(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        cycles_per_iteration = 456
+        instructions_per_iteration = 42
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < instructions_per_iteration
+            or not self._fast_rom_is_mbc3
+            or not self._can_batch_direct_memory_cycles()
+        ):
+            return 0
+
+        bank3_offset = 3 * 0x4000
+        bank3_bytes = (
+            0xF0,
+            0xF8,
+            0xFE,
+            0x0F,
+            0xCA,
+            0x3C,
+            0x40,
+            0x47,
+            0xF0,
+            0xB1,
+            0x5F,
+            0xA8,
+            0x57,
+            0xA3,
+            0xE0,
+            0xB2,
+            0x7A,
+            0xA0,
+            0xE0,
+            0xB3,
+            0x78,
+            0xE0,
+            0xB1,
+            0xFA,
+            0x30,
+            0xD7,
+            0xCB,
+            0x6F,
+            0x20,
+            0x16,
+            0xF0,
+            0xB1,
+            0xE0,
+            0xB4,
+            0xFA,
+            0x6B,
+            0xCD,
+            0xA7,
+            0xC8,
+        )
+        data = self._fast_rom_data
+        if bank3_offset + len(bank3_bytes) > self._fast_rom_data_len or any(
+            data[bank3_offset + index] != value for index, value in enumerate(bank3_bytes)
+        ):
+            return 0
+
+        bus = self.bus
+        hram = bus.hram
+        wram = bus.wram
+        next_buttons = hram[0xFFF8 - 0xFF80]
+        delay = hram[0xFFD5 - 0xFF80]
+        if (
+            delay == 0
+            or next_buttons == 0x0F
+            or next_buttons & 0x03
+            or wram[0xD730 - 0xC000] & 0x20
+            or wram[0xCD6B - 0xC000] != 0
+        ):
+            return 0
+
+        max_iterations = min(remaining_instructions // instructions_per_iteration, 8)
+        safe_cycles = self._fast_forward_safe_cycles(max_iterations * cycles_per_iteration)
+        iterations = safe_cycles // cycles_per_iteration
+        if iterations <= 0:
+            return 0
+
+        old_buttons = hram[0xFFB1 - 0xFF80]
+        changed = next_buttons ^ old_buttons
+        pressed = changed & next_buttons
+        if pressed & 0x03:
+            return 0
+
+        final_changed = changed
+        final_old_buttons = old_buttons
+        if iterations > 1:
+            final_changed = 0
+            final_old_buttons = next_buttons
+        hram[0xFFB2 - 0xFF80] = next_buttons if iterations > 1 else next_buttons & old_buttons
+        hram[0xFFB3 - 0xFF80] = 0 if iterations > 1 else pressed
+        hram[0xFFB1 - 0xFF80] = next_buttons
+        hram[0xFFB4 - 0xFF80] = next_buttons
+        old_bank = hram[0xFFB8 - 0xFF80]
+        if self._fast_rom_cartridge.mbc3_rom_bank != old_bank:
+            bus.mapper.write_rom_control(0x2000, old_bank)
+
+        self.a = delay
+        self.b = next_buttons
+        self.d = final_changed
+        self.e = final_old_buttons
+        self.f = FLAG_H
+        self.pc = 0x38F6
+        instruction_count = iterations * instructions_per_iteration
+        self.instructions += instruction_count
+        self._add_cycles(iterations * cycles_per_iteration)
+        return instruction_count
+
+    def _fast_forward_pokemon_joypad_status_call(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        instruction_count = 33
+        cycles = 352
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < instruction_count
+            or not self._fast_rom_is_mbc3
+            or not self._can_batch_direct_memory_cycles()
+            or self._fast_forward_safe_cycles(cycles) < cycles
+        ):
+            return 0
+
+        bus = self.bus
+        next_buttons = bus.hram[0xFFF8 - 0xFF80]
+        if next_buttons == 0x0F:
+            return 0
+        if bus.wram[0xD730 - 0xC000] & 0x20:
+            return 0
+        if bus.wram[0xCD6B - 0xC000] != 0:
+            return 0
+
+        sp = self.sp
+        sp_next = (sp + 1) & 0xFFFF
+        if not self._is_direct_fast_address(sp) or not self._is_direct_fast_address(sp_next):
+            return 0
+        return_low = self._read8_direct_fast(sp)
+        return_high = self._read8_direct_fast(sp_next)
+        if return_low is None or return_high is None:
+            return 0
+
+        old_bank = bus.hram[0xFFB8 - 0xFF80]
+        old_flags = self.f & 0xF0
+        old_buttons = bus.hram[0xFFB1 - 0xFF80]
+        changed = next_buttons ^ old_buttons
+        bus.hram[0xFFB2 - 0xFF80] = next_buttons & old_buttons
+        bus.hram[0xFFB3 - 0xFF80] = changed & next_buttons
+        bus.hram[0xFFB1 - 0xFF80] = next_buttons
+        bus.hram[0xFFB4 - 0xFF80] = next_buttons
+        bus.hram[0xFFB8 - 0xFF80] = old_bank
+        bus.mapper.write_rom_control(0x2000, old_bank)
+        self.a = old_bank
+        self.f = old_flags
+        self.b = next_buttons
+        self.d = changed
+        self.e = old_buttons
+        self.sp = (sp + 2) & 0xFFFF
+        self.pc = (return_low | (return_high << 8)) & 0xFFFF
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_pokemon_joypad_status_return(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        instruction_count = 23
+        cycles = 208
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < instruction_count
+            or not self._can_batch_direct_memory_cycles()
+            or self._fast_forward_safe_cycles(cycles) < cycles
+        ):
+            return 0
+
+        bus = self.bus
+        next_buttons = bus.hram[0xFFF8 - 0xFF80]
+        if next_buttons == 0x0F:
+            return 0
+        if bus.wram[0xD730 - 0xC000] & 0x20:
+            return 0
+        if bus.wram[0xCD6B - 0xC000] != 0:
+            return 0
+
+        sp = self.sp
+        sp_next = (sp + 1) & 0xFFFF
+        if not self._is_direct_fast_address(sp) or not self._is_direct_fast_address(sp_next):
+            return 0
+        return_low = self._read8_direct_fast(sp)
+        return_high = self._read8_direct_fast(sp_next)
+        if return_low is None or return_high is None:
+            return 0
+
+        old_buttons = bus.hram[0xFFB1 - 0xFF80]
+        changed = next_buttons ^ old_buttons
+        bus.hram[0xFFB2 - 0xFF80] = next_buttons & old_buttons
+        bus.hram[0xFFB3 - 0xFF80] = changed & next_buttons
+        bus.hram[0xFFB1 - 0xFF80] = next_buttons
+        bus.hram[0xFFB4 - 0xFF80] = next_buttons
+        self.a = 0
+        self.b = next_buttons
+        self.d = changed
+        self.e = old_buttons
+        self.f = FLAG_Z | FLAG_H
+        self.sp = (sp + 2) & 0xFFFF
+        self.pc = (return_low | (return_high << 8)) & 0xFFFF
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_pokemon_text_delay_return(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        instruction_count = 11
+        cycles = 96
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < instruction_count
+            or not self._can_batch_direct_memory_cycles()
+            or self._fast_forward_safe_cycles(cycles) < cycles
+        ):
+            return 0
+
+        value = self._read8_direct_fast(self.hl)
+        old_counter = self.bus.hram[0xFF8B - 0xFF80]
+        if value is None or value == 0xEE or old_counter <= 1:
+            return 0
+        sp = self.sp
+        sp_next = (sp + 1) & 0xFFFF
+        if not self._is_direct_fast_address(sp) or not self._is_direct_fast_address(sp_next):
+            return 0
+        return_low = self._read8_direct_fast(sp)
+        return_high = self._read8_direct_fast(sp_next)
+        if return_low is None or return_high is None:
+            return 0
+
+        next_counter = (old_counter - 1) & 0xFF
+        self.bus.hram[0xFF8B - 0xFF80] = next_counter
+        self.a = next_counter
+        self.b = value
+        self.f = FLAG_N | (FLAG_H if (old_counter & 0x0F) == 0 else 0)
+        self.sp = (sp + 2) & 0xFFFF
+        self.pc = (return_low | (return_high << 8)) & 0xFFFF
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
 
     def _fast_forward_hot_bitstream_step(
         self,
@@ -1369,6 +2414,119 @@ class CPU:
 
     def _execute_prefetched_fast(self, opcode: int) -> int:
         pc = self.pc
+
+        if 0x40 <= opcode <= 0x7F and opcode != 0x76:
+            src = opcode & 0x07
+            dst = (opcode >> 3) & 0x07
+            if src != 0x06 and dst != 0x06:
+                if src == 0:
+                    value = self.b
+                elif src == 1:
+                    value = self.c
+                elif src == 2:
+                    value = self.d
+                elif src == 3:
+                    value = self.e
+                elif src == 4:
+                    value = self.h
+                elif src == 5:
+                    value = self.l
+                else:
+                    value = self.a
+
+                if dst == 0:
+                    self.b = value
+                elif dst == 1:
+                    self.c = value
+                elif dst == 2:
+                    self.d = value
+                elif dst == 3:
+                    self.e = value
+                elif dst == 4:
+                    self.h = value
+                elif dst == 5:
+                    self.l = value
+                else:
+                    self.a = value
+                self.pc = (pc + 1) & 0xFFFF
+                self._add_cycles(4)
+                return 4
+
+        if 0x80 <= opcode <= 0xBF and (opcode & 0x07) != 0x06:
+            src = opcode & 0x07
+            if src == 0:
+                value = self.b
+            elif src == 1:
+                value = self.c
+            elif src == 2:
+                value = self.d
+            elif src == 3:
+                value = self.e
+            elif src == 4:
+                value = self.h
+            elif src == 5:
+                value = self.l
+            else:
+                value = self.a
+
+            operation = (opcode >> 3) & 0x07
+            a = self.a
+            if operation == 0:
+                result = a + value
+                self.a = result & 0xFF
+                self.f = (
+                    (FLAG_Z if self.a == 0 else 0)
+                    | (FLAG_H if ((a & 0x0F) + (value & 0x0F)) > 0x0F else 0)
+                    | (FLAG_C if result > 0xFF else 0)
+                )
+            elif operation == 1:
+                carry = 1 if self.f & FLAG_C else 0
+                result = a + value + carry
+                self.a = result & 0xFF
+                self.f = (
+                    (FLAG_Z if self.a == 0 else 0)
+                    | (FLAG_H if ((a & 0x0F) + (value & 0x0F) + carry) > 0x0F else 0)
+                    | (FLAG_C if result > 0xFF else 0)
+                )
+            elif operation == 2:
+                result = a - value
+                self.a = result & 0xFF
+                self.f = (
+                    FLAG_N
+                    | (FLAG_Z if self.a == 0 else 0)
+                    | (FLAG_H if (a & 0x0F) < (value & 0x0F) else 0)
+                    | (FLAG_C if a < value else 0)
+                )
+            elif operation == 3:
+                carry = 1 if self.f & FLAG_C else 0
+                result = a - value - carry
+                self.a = result & 0xFF
+                self.f = (
+                    FLAG_N
+                    | (FLAG_Z if self.a == 0 else 0)
+                    | (FLAG_H if (a & 0x0F) < ((value & 0x0F) + carry) else 0)
+                    | (FLAG_C if a < value + carry else 0)
+                )
+            elif operation == 4:
+                self.a = a & value
+                self.f = (FLAG_Z if self.a == 0 else 0) | FLAG_H
+            elif operation == 5:
+                self.a = a ^ value
+                self.f = FLAG_Z if self.a == 0 else 0
+            elif operation == 6:
+                self.a = a | value
+                self.f = FLAG_Z if self.a == 0 else 0
+            else:
+                result = a - value
+                self.f = (
+                    FLAG_N
+                    | (FLAG_Z if (result & 0xFF) == 0 else 0)
+                    | (FLAG_H if (a & 0x0F) < (value & 0x0F) else 0)
+                    | (FLAG_C if a < value else 0)
+                )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
 
         if opcode == 0xFA and pc <= 0x7FFD:
             bus = self.bus

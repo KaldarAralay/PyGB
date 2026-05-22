@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from button_script import parse_button_script
 from audio import AudioPlaybackStats
 from display import (
     DisplayConfig,
@@ -414,6 +415,21 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(capture.sample_rate, 22_050)
         self.assertEqual(capture.writes, [[(1, -1)]])
         self.assertTrue(capture.closed)
+
+    def test_tk_display_applies_scripted_buttons_before_running_frame(self) -> None:
+        emulator = FakeEmulator()
+        display = TkDisplay(
+            emulator,
+            config=DisplayConfig(),
+            button_script=parse_button_script("0:start:2"),
+        )
+        display._root = FakeRoot()
+        display._running = True
+
+        display._run_frame()
+
+        self.assertEqual(emulator.buttons, {"start"})
+        self.assertEqual(emulator.run_calls[-1]["max_frames"], 1)
 
 
 if __name__ == "__main__":

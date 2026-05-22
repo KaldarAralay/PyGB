@@ -2286,20 +2286,22 @@ class PPU:
     def _sprites_on_line(self, lcdc: int, y: int) -> list[tuple[int, int, int, int, int, int]]:
         sprite_height = 16 if lcdc & LCDC_OBJ_SIZE else 8
         selected: list[tuple[int, int, int, int, int, int]] = []
+        oam = self.bus.oam
+        append = selected.append
         for index in range(40):
             offset = index * 4
-            sprite_y_raw = self.bus.oam[offset]
-            sprite_x_raw = self.bus.oam[offset + 1]
+            sprite_y_raw = oam[offset]
+            sprite_x_raw = oam[offset + 1]
             sprite_y = sprite_y_raw - 16
             sprite_x = sprite_x_raw - 8
             if sprite_y <= y < sprite_y + sprite_height:
-                selected.append(
+                append(
                     (
                         sprite_x,
                         index,
                         sprite_y,
-                        self.bus.oam[offset + 2],
-                        self.bus.oam[offset + 3],
+                        oam[offset + 2],
+                        oam[offset + 3],
                         sprite_x_raw,
                     )
                 )
