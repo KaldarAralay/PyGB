@@ -16,7 +16,9 @@ if TYPE_CHECKING:
 
 
 DMG_FPS = 4_194_304 / (154 * 456)
-MIN_RELIABLE_TK_DELAY_SECONDS = 0.004
+# Windows/Tk timers often oversleep short 4-10 ms delays; after_idle gives
+# steadier gameplay pacing and live audio still applies its own queue backstop.
+MIN_RELIABLE_TK_DELAY_SECONDS = 0.010
 LIVE_AUDIO_TARGET_QUEUE_MS = 225.0
 LIVE_AUDIO_HIGH_WATERMARK_MS = 238.0
 TK_DMG_COLORS = tuple(f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in DMG_GRAYSCALE)

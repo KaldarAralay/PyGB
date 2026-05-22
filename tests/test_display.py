@@ -177,11 +177,12 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(display_command_for_key("Escape"), "quit")
         self.assertIsNone(display_command_for_key("z"))
 
-    def test_frame_delay_uses_idle_only_when_behind(self) -> None:
+    def test_frame_delay_skips_unreliable_short_tk_delays(self) -> None:
         self.assertEqual(frame_delay_ms(1 / 60, 1 / 60), 0)
         self.assertEqual(frame_delay_ms(1 / 60, 0.0161), 0)
         self.assertEqual(frame_delay_ms(1 / 60, 0.0130), 0)
-        self.assertEqual(frame_delay_ms(1 / 60, 0.0100), 7)
+        self.assertEqual(frame_delay_ms(1 / 60, 0.0100), 0)
+        self.assertEqual(frame_delay_ms(1 / 60, 0.0040), 13)
 
     def test_audio_pacing_waits_only_above_high_watermark(self) -> None:
         self.assertEqual(audio_pacing_delay_ms(238.0), 0)

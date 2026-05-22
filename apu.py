@@ -762,7 +762,10 @@ class APU:
             volumes[1] > 0 or (self._envelope_enabled[1] and io[0x17] & 0x08)
         )
         clock_ch2 = enabled[2]
-        defer_ch3 = enabled[3] and self._noise_lfsr_can_defer()
+        nr42 = io[0x21]
+        defer_ch3 = enabled[3] and volumes[3] == 0 and not (
+            nr42 & 0x08 and nr42 & 0x07
+        )
         clock_ch3 = enabled[3] and not defer_ch3
         if not (clock_ch0 or clock_ch1 or clock_ch2 or clock_ch3 or defer_ch3):
             return
@@ -838,7 +841,10 @@ class APU:
             return False
         if enabled[2]:
             return False
-        if enabled[3] and not self._noise_lfsr_can_defer():
+        nr42 = io[0x21]
+        if enabled[3] and not (
+            self.channel_volumes[3] == 0 and not (nr42 & 0x08 and nr42 & 0x07)
+        ):
             return False
         return True
 
@@ -884,7 +890,8 @@ class APU:
         )
 
     def _noise_lfsr_can_defer(self) -> bool:
-        return self._pulse_channel_is_zero_volume(3, self.bus.io[0x21])
+        value = self.bus.io[0x21]
+        return self.channel_volumes[3] == 0 and not (value & 0x08 and value & 0x07)
 
     def _flush_pending_noise_cycles(self) -> None:
         cycles = self._pending_noise_cycles
@@ -1070,9 +1077,27 @@ class APU:
             self._profile_generated_samples += count
 
     def _constant_zero_output_sample(self) -> tuple[int, int] | None:
-        if not self.powered or not self._any_channel_dac_enabled():
+        io = self.bus.io
+        if not io[NR52] & 0x80:
             return (0, 0)
-        if not self._channels_are_dc_bias_only():
+        if not (((io[0x12] | io[0x17] | io[0x21]) & 0xF8) or (io[0x1A] & 0x80)):
+            return (0, 0)
+        enabled = self._channel_output_enabled
+        volumes = self.channel_volumes
+        envelopes = self._envelope_enabled
+        if enabled[0] and (
+            volumes[0] != 0 or (envelopes[0] and io[0x12] & 0x08 and io[0x12] & 0x07)
+        ):
+            return None
+        if enabled[1] and (
+            volumes[1] != 0 or (envelopes[1] and io[0x17] & 0x08 and io[0x17] & 0x07)
+        ):
+            return None
+        if enabled[2] and ((io[0x1C] >> 5) & 0x03) != 0:
+            return None
+        if enabled[3] and (
+            volumes[3] != 0 or (envelopes[3] and io[0x21] & 0x08 and io[0x21] & 0x07)
+        ):
             return None
         sample = self._mix_sample_from_dacs()
         capacitors = self._high_pass_capacitors

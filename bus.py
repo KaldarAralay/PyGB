@@ -63,6 +63,7 @@ class Bus:
         boot_rom: bytes | None = None,
     ) -> None:
         self.cartridge = cartridge
+        self.mapper = cartridge.mapper
         self.boot_rom = bytes(boot_rom[:0x100]) if boot_rom is not None else b""
         self.boot_rom_enabled = bool(self.boot_rom)
         self.vram = bytearray(0x2000)
@@ -106,13 +107,13 @@ class Bus:
         if address <= 0x7FFF:
             if self.boot_rom_enabled and address < len(self.boot_rom):
                 return self.boot_rom[address]
-            return self.cartridge.read_rom(address)
+            return self.mapper.read_rom(address)
         if address <= 0x9FFF:
             if not self._vram_read_accessible():
                 return 0xFF
             return self.vram[address - 0x8000]
         if address <= 0xBFFF:
-            return self.cartridge.read_ram(address)
+            return self.mapper.read_ram(address)
         if address <= 0xDFFF:
             return self.wram[address - 0xC000]
         if address <= 0xFDFF:
@@ -152,7 +153,7 @@ class Bus:
         if self._oam_dma_active and not self._is_hram(address):
             return
         if address <= 0x7FFF:
-            self.cartridge.write_rom_control(address, value)
+            self.mapper.write_rom_control(address, value)
             return
         if address <= 0x9FFF:
             if not self._vram_write_accessible():
@@ -160,7 +161,7 @@ class Bus:
             self.vram[address - 0x8000] = value
             return
         if address <= 0xBFFF:
-            self.cartridge.write_ram(address, value)
+            self.mapper.write_ram(address, value)
             return
         if address <= 0xDFFF:
             self.wram[address - 0xC000] = value
@@ -270,8 +271,9 @@ class Bus:
         if self._oam_dma_requested and not defer_new_dma:
             self._begin_oam_dma()
         self._tick_system_counter(cycles)
-        self._tick_serial(cycles)
-        self.apu.tick(cycles)
+        if self._serial_transfer_cycles:
+            self._tick_serial(cycles)
+        self.apu._tick(cycles)
         if self._oam_dma_requested:
             self._begin_oam_dma()
 

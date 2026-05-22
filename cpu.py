@@ -243,6 +243,14 @@ class CPU:
 
         if opcode == 0x00:
             return 4
+        if opcode == 0x01:
+            self.c = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self.b = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            return 12
         if opcode == 0x08:
             self._write16(self._fetch16(), self.sp)
             return 20
@@ -255,31 +263,330 @@ class CPU:
                 self.stopped = True
             return 4
         if opcode == 0x18:
-            self._jr(True)
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self._internal_cycle()
+            self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
             return 12
+        if opcode == 0x05:
+            value = self.b
+            result = (value - 1) & 0xFF
+            self.b = result
+            self.f = (
+                (self.f & FLAG_C)
+                | FLAG_N
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x00 else 0)
+            )
+            return 4
+        if opcode == 0x06:
+            self.b = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            return 8
+        if opcode == 0x07:
+            carry = (self.a >> 7) & 1
+            self.a = ((self.a << 1) | carry) & 0xFF
+            self.f = FLAG_C if carry else 0
+            return 4
+        if opcode == 0x09:
+            self._internal_cycle()
+            hl = (self.h << 8) | self.l
+            value = (self.b << 8) | self.c
+            result = hl + value
+            self.f = (
+                (self.f & FLAG_Z)
+                | (FLAG_H if ((hl & 0x0FFF) + (value & 0x0FFF)) > 0x0FFF else 0)
+                | (FLAG_C if result > 0xFFFF else 0)
+            )
+            self.h = (result >> 8) & 0xFF
+            self.l = result & 0xFF
+            return 8
+        if opcode == 0x0C:
+            value = self.c
+            result = (value + 1) & 0xFF
+            self.c = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            return 4
+        if opcode == 0x0D:
+            value = self.c
+            result = (value - 1) & 0xFF
+            self.c = result
+            self.f = (
+                (self.f & FLAG_C)
+                | FLAG_N
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x00 else 0)
+            )
+            return 4
+        if opcode == 0x0E:
+            self.c = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            return 8
+        if opcode == 0x12:
+            self.bus.write8((self.d << 8) | self.e, self.a)
+            self._add_cycles(4)
+            return 8
+        if opcode == 0x13:
+            self._internal_cycle()
+            value = ((self.d << 8) | self.e) + 1
+            self.d = (value >> 8) & 0xFF
+            self.e = value & 0xFF
+            return 8
+        if opcode == 0x19:
+            self._internal_cycle()
+            hl = (self.h << 8) | self.l
+            value = (self.d << 8) | self.e
+            result = hl + value
+            self.f = (
+                (self.f & FLAG_Z)
+                | (FLAG_H if ((hl & 0x0FFF) + (value & 0x0FFF)) > 0x0FFF else 0)
+                | (FLAG_C if result > 0xFFFF else 0)
+            )
+            self.h = (result >> 8) & 0xFF
+            self.l = result & 0xFF
+            return 8
+        if opcode == 0x1A:
+            self.a = self.bus.read8((self.d << 8) | self.e)
+            self._add_cycles(4)
+            return 8
+        if opcode == 0x1B:
+            self._internal_cycle()
+            value = ((self.d << 8) | self.e) - 1
+            self.d = (value >> 8) & 0xFF
+            self.e = value & 0xFF
+            return 8
+        if opcode == 0x20:
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            if not self.f & FLAG_Z:
+                self._internal_cycle()
+                self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                return 12
+            return 8
+        if opcode == 0x28:
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            if self.f & FLAG_Z:
+                self._internal_cycle()
+                self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                return 12
+            return 8
+        if opcode == 0x30:
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            if not self.f & FLAG_C:
+                self._internal_cycle()
+                self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                return 12
+            return 8
+        if opcode == 0x38:
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            if self.f & FLAG_C:
+                self._internal_cycle()
+                self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                return 12
+            return 8
+        if opcode == 0x2C:
+            value = self.l
+            result = (value + 1) & 0xFF
+            self.l = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            return 4
+        if opcode == 0x22:
+            hl = (self.h << 8) | self.l
+            self.bus.write8(hl, self.a)
+            self._add_cycles(4)
+            hl = (hl + 1) & 0xFFFF
+            self.h = (hl >> 8) & 0xFF
+            self.l = hl & 0xFF
+            return 8
+        if opcode == 0x23:
+            self._internal_cycle()
+            value = ((self.h << 8) | self.l) + 1
+            self.h = (value >> 8) & 0xFF
+            self.l = value & 0xFF
+            return 8
         if opcode == 0x27:
             self._daa()
             return 4
         if opcode == 0x2F:
             self.a ^= 0xFF
-            self.flag_n = True
-            self.flag_h = True
+            self.f = (self.f & (FLAG_Z | FLAG_C)) | FLAG_N | FLAG_H
             return 4
         if opcode == 0x37:
-            self.flag_n = False
-            self.flag_h = False
-            self.flag_c = True
+            self.f = (self.f & FLAG_Z) | FLAG_C
             return 4
         if opcode == 0x3F:
-            self.flag_n = False
-            self.flag_h = False
-            self.flag_c = not self.flag_c
+            self.f = (self.f & FLAG_Z) | (0 if self.f & FLAG_C else FLAG_C)
             return 4
+        if opcode == 0x3D:
+            value = self.a
+            result = (value - 1) & 0xFF
+            self.a = result
+            self.f = (
+                (self.f & FLAG_C)
+                | FLAG_N
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x00 else 0)
+            )
+            return 4
+        if opcode == 0x3C:
+            value = self.a
+            result = (value + 1) & 0xFF
+            self.a = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            return 4
+        if opcode == 0x2A:
+            hl = (self.h << 8) | self.l
+            self.a = self.bus.read8(hl)
+            self._add_cycles(4)
+            hl = (hl + 1) & 0xFFFF
+            self.h = (hl >> 8) & 0xFF
+            self.l = hl & 0xFF
+            return 8
+        if opcode == 0x3E:
+            self.a = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            return 8
         if opcode == 0x76:
             if not self.ime and self._pending_interrupts():
                 self._halt_bug = True
             else:
                 self.halted = True
+            return 4
+        if opcode == 0x47:
+            self.b = self.a
+            return 4
+        if opcode == 0x43:
+            self.b = self.e
+            return 4
+        if opcode == 0x4F:
+            self.c = self.a
+            return 4
+        if opcode == 0x57:
+            self.d = self.a
+            return 4
+        if opcode == 0x58:
+            self.e = self.b
+            return 4
+        if opcode == 0x5D:
+            self.e = self.l
+            return 4
+        if opcode == 0x5F:
+            self.e = self.a
+            return 4
+        if opcode == 0x67:
+            self.h = self.a
+            return 4
+        if opcode == 0x6F:
+            self.l = self.a
+            return 4
+        if opcode == 0x78:
+            self.a = self.b
+            return 4
+        if opcode == 0x79:
+            self.a = self.c
+            return 4
+        if opcode == 0x7A:
+            self.a = self.d
+            return 4
+        if opcode == 0x7B:
+            self.a = self.e
+            return 4
+        if opcode == 0x7C:
+            self.a = self.h
+            return 4
+        if opcode == 0x7D:
+            self.a = self.l
+            return 4
+        if opcode == 0x77:
+            self.bus.write8((self.h << 8) | self.l, self.a)
+            self._add_cycles(4)
+            return 8
+        if opcode == 0x7E:
+            self.a = self.bus.read8((self.h << 8) | self.l)
+            self._add_cycles(4)
+            return 8
+        if opcode == 0x85:
+            value = self.l
+            result = self.a + value
+            self.f = (
+                (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if ((self.a & 0x0F) + (value & 0x0F)) > 0x0F else 0)
+                | (FLAG_C if result > 0xFF else 0)
+            )
+            self.a = result & 0xFF
+            return 4
+        if opcode == 0x86:
+            value = self.bus.read8((self.h << 8) | self.l)
+            self._add_cycles(4)
+            result = self.a + value
+            self.f = (
+                (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if ((self.a & 0x0F) + (value & 0x0F)) > 0x0F else 0)
+                | (FLAG_C if result > 0xFF else 0)
+            )
+            self.a = result & 0xFF
+            return 8
+        if opcode == 0xA7:
+            self.f = (FLAG_Z if self.a == 0 else 0) | FLAG_H
+            return 4
+        if opcode == 0xAF:
+            self.a = 0
+            self.f = FLAG_Z
+            return 4
+        if opcode == 0xB0:
+            self.a |= self.b
+            self.f = FLAG_Z if self.a == 0 else 0
+            return 4
+        if opcode == 0xB1:
+            self.a |= self.c
+            self.f = FLAG_Z if self.a == 0 else 0
+            return 4
+        if opcode == 0xB3:
+            self.a |= self.e
+            self.f = FLAG_Z if self.a == 0 else 0
+            return 4
+        if opcode == 0xBD:
+            value = self.l
+            result = self.a - value
+            self.f = (
+                FLAG_N
+                | (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if (self.a & 0x0F) < (value & 0x0F) else 0)
+                | (FLAG_C if self.a < value else 0)
+            )
+            return 4
+        if opcode == 0xB8:
+            value = self.b
+            result = self.a - value
+            self.f = (
+                FLAG_N
+                | (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if (self.a & 0x0F) < (value & 0x0F) else 0)
+                | (FLAG_C if self.a < value else 0)
+            )
             return 4
         if opcode == 0xC3:
             address = self._fetch16()
@@ -287,15 +594,32 @@ class CPU:
             self.pc = address
             return 16
         if opcode == 0xC9:
-            self.pc = self._pop16()
+            lo = self.bus.read8(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            hi = self.bus.read8(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            self.pc = lo | (hi << 8)
             self._internal_cycle()
             return 16
         if opcode == 0xCB:
             return self._execute_cb(self._fetch8())
         if opcode == 0xCD:
-            address = self._fetch16()
+            lo = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            hi = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            address = lo | (hi << 8)
             self._internal_cycle()
-            self._push16(self.pc)
+            self.sp = (self.sp - 1) & 0xFFFF
+            self.bus.write8(self.sp, (self.pc >> 8) & 0xFF)
+            self._add_cycles(4)
+            self.sp = (self.sp - 1) & 0xFFFF
+            self.bus.write8(self.sp, self.pc & 0xFF)
+            self._add_cycles(4)
             self.pc = address
             return 24
         if opcode == 0xD9:
@@ -304,8 +628,22 @@ class CPU:
             self._ime_delay = 0
             self._internal_cycle()
             return 16
+        if opcode == 0xD1:
+            lo = self.bus.read8(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            hi = self.bus.read8(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            self.d = hi
+            self.e = lo
+            return 12
         if opcode == 0xE0:
-            self._write8(0xFF00 + self._fetch8(), self.a)
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self.bus.write8(0xFF00 + offset, self.a)
+            self._add_cycles(4)
             return 12
         if opcode == 0xE2:
             self._write8(0xFF00 + self.c, self.a)
@@ -318,13 +656,24 @@ class CPU:
             self.sp = (self.sp + signed) & 0xFFFF
             return 16
         if opcode == 0xE9:
-            self.pc = self.hl
+            self.pc = (self.h << 8) | self.l
             return 4
         if opcode == 0xEA:
-            self._write8(self._fetch16(), self.a)
+            lo = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            hi = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self.bus.write8(lo | (hi << 8), self.a)
+            self._add_cycles(4)
             return 16
         if opcode == 0xF0:
-            self.a = self._read8(0xFF00 + self._fetch8())
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self.a = self.bus.read8(0xFF00 + offset)
+            self._add_cycles(4)
             return 12
         if opcode == 0xF2:
             self.a = self._read8(0xFF00 + self.c)
@@ -342,14 +691,39 @@ class CPU:
             return 12
         if opcode == 0xF9:
             self._internal_cycle()
-            self.sp = self.hl
+            self.sp = (self.h << 8) | self.l
             return 8
         if opcode == 0xFA:
-            self.a = self._read8(self._fetch16())
+            lo = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            hi = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self.a = self.bus.read8(lo | (hi << 8))
+            self._add_cycles(4)
             return 16
         if opcode == 0xFB:
             self._ime_delay = 2
             return 4
+        if opcode == 0xE6:
+            self.a &= self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self.f = (FLAG_Z if self.a == 0 else 0) | FLAG_H
+            return 8
+        if opcode == 0xFE:
+            value = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            result = self.a - value
+            self.f = (
+                FLAG_N
+                | (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if (self.a & 0x0F) < (value & 0x0F) else 0)
+                | (FLAG_C if self.a < value else 0)
+            )
+            return 8
 
         if opcode in {0x07, 0x0F, 0x17, 0x1F}:
             self._rotate_accumulator(opcode)
@@ -360,6 +734,14 @@ class CPU:
             self._jr(condition)
             return 12 if condition else 8
 
+        if opcode == 0x21:
+            self.l = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self.h = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            return 12
         if opcode & 0xCF == 0x01:
             self._set_r16((opcode >> 4) & 0x03, self._fetch16())
             return 12
@@ -368,6 +750,12 @@ class CPU:
             return 8
         if opcode in {0x0A, 0x1A, 0x2A, 0x3A}:
             self._ld_a_indirect(opcode)
+            return 8
+        if opcode == 0x0B:
+            self._internal_cycle()
+            value = ((self.b << 8) | self.c) - 1
+            self.b = (value >> 8) & 0xFF
+            self.c = value & 0xFF
             return 8
         if opcode & 0xCF == 0x03:
             index = (opcode >> 4) & 0x03
@@ -391,10 +779,25 @@ class CPU:
             index = (opcode >> 3) & 0x07
             self._set_r8(index, self._dec8(self._get_r8(index)))
             return 12 if index == 6 else 4
+        if opcode == 0x36:
+            value = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self.bus.write8((self.h << 8) | self.l, value)
+            self._add_cycles(4)
+            return 12
         if opcode & 0xC7 == 0x06:
             index = (opcode >> 3) & 0x07
             self._set_r8(index, self._fetch8())
             return 12 if index == 6 else 8
+        if opcode == 0x72:
+            self.bus.write8((self.h << 8) | self.l, self.d)
+            self._add_cycles(4)
+            return 8
+        if opcode == 0x73:
+            self.bus.write8((self.h << 8) | self.l, self.e)
+            self._add_cycles(4)
+            return 8
         if 0x40 <= opcode <= 0x7F:
             dst = (opcode >> 3) & 0x07
             src = opcode & 0x07
@@ -404,6 +807,111 @@ class CPU:
             src = opcode & 0x07
             self._alu((opcode >> 3) & 0x07, self._get_r8(src))
             return 8 if src == 6 else 4
+
+        if opcode == 0xC0:
+            self._internal_cycle()
+            if not self.f & FLAG_Z:
+                lo = self.bus.read8(self.sp)
+                self._add_cycles(4)
+                self.sp = (self.sp + 1) & 0xFFFF
+                hi = self.bus.read8(self.sp)
+                self._add_cycles(4)
+                self.sp = (self.sp + 1) & 0xFFFF
+                self.pc = lo | (hi << 8)
+                self._internal_cycle()
+                return 20
+            return 8
+        if opcode == 0xC1:
+            lo = self.bus.read8(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            hi = self.bus.read8(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            self.b = hi
+            self.c = lo
+            return 12
+        if opcode == 0xC5:
+            self._internal_cycle()
+            self.sp = (self.sp - 1) & 0xFFFF
+            self.bus.write8(self.sp, self.b)
+            self._add_cycles(4)
+            self.sp = (self.sp - 1) & 0xFFFF
+            self.bus.write8(self.sp, self.c)
+            self._add_cycles(4)
+            return 16
+        if opcode == 0xC8:
+            self._internal_cycle()
+            if self.f & FLAG_Z:
+                lo = self.bus.read8(self.sp)
+                self._add_cycles(4)
+                self.sp = (self.sp + 1) & 0xFFFF
+                hi = self.bus.read8(self.sp)
+                self._add_cycles(4)
+                self.sp = (self.sp + 1) & 0xFFFF
+                self.pc = lo | (hi << 8)
+                self._internal_cycle()
+                return 20
+            return 8
+        if opcode == 0xCA:
+            lo = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            hi = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            if self.f & FLAG_Z:
+                self._internal_cycle()
+                self.pc = lo | (hi << 8)
+                return 16
+            return 12
+        if opcode == 0xD5:
+            self._internal_cycle()
+            self.sp = (self.sp - 1) & 0xFFFF
+            self.bus.write8(self.sp, self.d)
+            self._add_cycles(4)
+            self.sp = (self.sp - 1) & 0xFFFF
+            self.bus.write8(self.sp, self.e)
+            self._add_cycles(4)
+            return 16
+        if opcode == 0xE1:
+            lo = self.bus.read8(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            hi = self.bus.read8(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            self.h = hi
+            self.l = lo
+            return 12
+        if opcode == 0xE5:
+            self._internal_cycle()
+            self.sp = (self.sp - 1) & 0xFFFF
+            self.bus.write8(self.sp, self.h)
+            self._add_cycles(4)
+            self.sp = (self.sp - 1) & 0xFFFF
+            self.bus.write8(self.sp, self.l)
+            self._add_cycles(4)
+            return 16
+        if opcode == 0xF1:
+            lo = self.bus.read8(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            hi = self.bus.read8(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            self.a = hi
+            self.f = lo & 0xF0
+            return 12
+        if opcode == 0xF5:
+            self._internal_cycle()
+            self.sp = (self.sp - 1) & 0xFFFF
+            self.bus.write8(self.sp, self.a)
+            self._add_cycles(4)
+            self.sp = (self.sp - 1) & 0xFFFF
+            self.bus.write8(self.sp, self.f & 0xF0)
+            self._add_cycles(4)
+            return 16
 
         if opcode in {0xC0, 0xC8, 0xD0, 0xD8}:
             condition = self._condition((opcode - 0xC0) // 8)

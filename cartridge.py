@@ -316,6 +316,16 @@ class MBC2Mapper(CartridgeMapper):
 class MBC3Mapper(CartridgeMapper):
     ram_gate_required = True
 
+    def read_rom(self, address: int) -> int:
+        cart = self.cartridge
+        data = cart.data
+        if address < 0x4000:
+            return data[address] if address < len(data) else 0xFF
+        if address < 0x8000:
+            offset = cart._mbc3_rom_bank_offset + (address - 0x4000)
+            return data[offset]
+        return 0xFF
+
     def selected_rom_bank(self) -> int:
         return self.cartridge.mbc3_rom_bank % self.cartridge.rom_bank_count
 
@@ -327,6 +337,9 @@ class MBC3Mapper(CartridgeMapper):
             cart.ram_enabled = (value & 0x0F) == 0x0A
         elif address <= 0x3FFF:
             cart.mbc3_rom_bank = value & 0x7F or 1
+            cart._mbc3_rom_bank_offset = (
+                cart.mbc3_rom_bank % cart.rom_bank_count
+            ) * 0x4000
         elif address <= 0x5FFF:
             cart.mbc3_ram_select = value & 0x0F
         else:
@@ -457,6 +470,7 @@ class Cartridge:
         if len(data) < 0x150:
             raise ValueError("ROM is too small to contain a Game Boy cartridge header")
         self.data = bytes(data)
+        self._rom_bank_count = max(1, len(self.data) // 0x4000)
         self.path = path
         self.header = self._parse_header()
         self.type_spec = CARTRIDGE_TYPE_SPECS.get(
@@ -468,6 +482,7 @@ class Cartridge:
         self.banking_mode = 0
         self.mbc2_rom_bank = 1
         self.mbc3_rom_bank = 1
+        self._mbc3_rom_bank_offset = (self.mbc3_rom_bank % self._rom_bank_count) * 0x4000
         self.mbc3_ram_select = 0
         self.mbc3_rtc_latch_previous = 0
         self._rtc_time_provider = rtc_time_provider or time.time
@@ -489,11 +504,12 @@ class Cartridge:
         self.huc1_ir_transmitter_enabled = False
         self.ram_enabled = False
         self.ram = bytearray(MBC2_RAM_SIZE if self.has_mbc2 else self.ram_size_bytes)
+        self._ram_bank_count = 0 if not self.ram else max(1, len(self.ram) // 0x2000)
         self.mapper = create_cartridge_mapper(self)
 
     @property
     def rom_bank_count(self) -> int:
-        return max(1, len(self.data) // 0x4000)
+        return self._rom_bank_count
 
     @property
     def ram_size_bytes(self) -> int:
@@ -501,9 +517,7 @@ class Cartridge:
 
     @property
     def ram_bank_count(self) -> int:
-        if not self.ram:
-            return 0
-        return max(1, len(self.ram) // 0x2000)
+        return self._ram_bank_count
 
     @property
     def mapper_name(self) -> str:

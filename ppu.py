@@ -166,7 +166,8 @@ class PPU:
         return self.bus.io[0x41] & 0x03
 
     def tick(self, cycles: int) -> None:
-        if not self.lcd_enabled:
+        io = self.bus.io
+        if not io[0x40] & LCDC_ENABLE:
             self.line_dots = 0
             self._clear_line_rendering()
             self._scanline = 0
@@ -180,7 +181,7 @@ class PPU:
             if ly < VISIBLE_LINES:
                 if self.line_dots < MODE2_DOTS:
                     next_dot = min(next_dot, MODE2_DOTS)
-                if self.mode == MODE_DRAWING:
+                if (io[0x41] & 0x03) == MODE_DRAWING:
                     next_dot = min(next_dot, MODE2_DOTS + self._line_mode3_dots)
                 if self.line_dots < DOTS_PER_LINE - 4:
                     next_dot = min(next_dot, DOTS_PER_LINE - 4)
@@ -204,7 +205,7 @@ class PPU:
                     self._line_mode3_dots = self._mode3_duration_for_line(self._line_render_state, ly)
                     self._set_mode(MODE_DRAWING)
                 elif (
-                    self.mode == MODE_DRAWING
+                    (io[0x41] & 0x03) == MODE_DRAWING
                     and self.line_dots >= MODE2_DOTS + self._line_mode3_dots
                 ):
                     self._finish_mode3_line(ly)
@@ -214,14 +215,16 @@ class PPU:
                     self._preload_next_ly(ly + 1)
             elif ly == LINES_PER_FRAME - 1 and self.line_dots == 4:
                 self._set_ly(0)
-            self._maybe_request_pending_hblank_stat_interrupt()
+            if self._hblank_stat_interrupt_dot is not None:
+                self._maybe_request_pending_hblank_stat_interrupt()
 
             if self.line_dots >= DOTS_PER_LINE:
                 self.line_dots = 0
                 self._advance_line()
 
     def cycles_until_next_event(self) -> int:
-        if not self.lcd_enabled:
+        io = self.bus.io
+        if not io[0x40] & LCDC_ENABLE:
             return DOTS_PER_LINE
 
         next_dot = DOTS_PER_LINE
@@ -229,7 +232,7 @@ class PPU:
         if ly < VISIBLE_LINES:
             if self.line_dots < MODE2_DOTS:
                 next_dot = min(next_dot, MODE2_DOTS)
-            if self.mode == MODE_DRAWING:
+            if (io[0x41] & 0x03) == MODE_DRAWING:
                 next_dot = min(next_dot, MODE2_DOTS + self._line_mode3_dots)
             if self.line_dots < DOTS_PER_LINE - 4:
                 next_dot = min(next_dot, DOTS_PER_LINE - 4)
@@ -2012,9 +2015,13 @@ class PPU:
             )
             prepared_sprites.append((sprite_x, sprite_x + 8, attrs, lo, hi, shades))
 
-        for x in range(start_x, end_x):
-            for sprite_x, sprite_right, attrs, lo, hi, shades in prepared_sprites:
-                if not sprite_x <= x < sprite_right:
+        claimed = [False] * (end_x - start_x)
+        for sprite_x, sprite_right, attrs, lo, hi, shades in prepared_sprites:
+            left = max(start_x, sprite_x)
+            right = min(end_x, sprite_right)
+            for x in range(left, right):
+                claim_index = x - start_x
+                if claimed[claim_index]:
                     continue
                 tile_x = x - sprite_x
                 if attrs & OBJ_X_FLIP:
@@ -2023,10 +2030,10 @@ class PPU:
                 color_id = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1)
                 if color_id == 0:
                     continue
+                claimed[claim_index] = True
                 if attrs & OBJ_PRIORITY and bg_color_ids[x] != 0:
-                    break
+                    continue
                 row[x] = shades[color_id]
-                break
 
     def _tilemap_pixel(
         self,
@@ -2423,8 +2430,8 @@ class PPU:
             self._line_oam_dma_hidden_x = 0
         self._line_render_state = self._capture_render_state()
         self._line_render_segments = [(0, self._line_render_state)]
-        self._line_row = [0 for _ in range(SCREEN_WIDTH)]
-        self._line_bg_color_ids = [0 for _ in range(SCREEN_WIDTH)]
+        self._line_row = [0] * SCREEN_WIDTH
+        self._line_bg_color_ids = [0] * SCREEN_WIDTH
         self._line_bg_tile_data_sources = {}
         self._line_bg_tile_map_scy = {}
         self._line_bg_tile_data_scy = {}
@@ -2839,7 +2846,7 @@ class PPU:
         active = active or (mode == MODE_VBLANK and bool(stat & 0x10))
         active = active or (mode == MODE_OAM and bool(stat & 0x20))
         active = active or (bool(stat & 0x04) and bool(stat & 0x40))
-        if not self.lcd_enabled:
+        if not self.bus.io[0x40] & LCDC_ENABLE:
             self._stat_line = active
             return
         if active and not self._stat_line:
@@ -2847,7 +2854,7 @@ class PPU:
         self._stat_line = active
 
     def _request_vblank_oam_stat_interrupt(self) -> None:
-        if self.lcd_enabled and self.bus.io[0x41] & 0x20 and not self._stat_line:
+        if self.bus.io[0x40] & LCDC_ENABLE and self.bus.io[0x41] & 0x20 and not self._stat_line:
             self.bus.interrupt_flags = self.bus.interrupt_flags | 0x02
 
     def _schedule_hblank_stat_interrupt(self) -> None:
@@ -2860,7 +2867,7 @@ class PPU:
             return
         self._hblank_stat_interrupt_dot = None
         if (
-            self.lcd_enabled
+            self.bus.io[0x40] & LCDC_ENABLE
             and self.mode == MODE_HBLANK
             and self.bus.io[0x41] & 0x08
             and not self._stat_line
@@ -2869,7 +2876,7 @@ class PPU:
             self._stat_line = True
 
     def _maybe_request_spurious_stat_interrupt(self) -> None:
-        if not self.lcd_enabled or self._stat_line:
+        if not self.bus.io[0x40] & LCDC_ENABLE or self._stat_line:
             return
         stat = self.bus.io[0x41]
         mode = stat & 0x03
