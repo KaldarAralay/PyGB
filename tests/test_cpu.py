@@ -1189,6 +1189,445 @@ class CPUTests(unittest.TestCase):
         self.assertEqual(cpu.instructions, 146)
         self.assertEqual(cpu.cycles, 1592)
 
+    def test_run_fast_forwards_pokemon_sprite_oam_piece_loop(self) -> None:
+        cpu, bus = make_mbc3_cpu(0x4B6C)
+        rom = bytearray(bus.cartridge.data)
+        rom[0x4B6C : 0x4BAA] = bytes(
+            [
+                0xF0,
+                0x92,
+                0xC6,
+                0x10,
+                0x86,
+                0x12,
+                0x23,
+                0xF0,
+                0x91,
+                0xC6,
+                0x08,
+                0x86,
+                0x1C,
+                0x12,
+                0x1C,
+                0x0A,
+                0x03,
+                0xC5,
+                0x47,
+                0xFA,
+                0xCD,
+                0xD5,
+                0xCB,
+                0x37,
+                0xE6,
+                0x0F,
+                0xFE,
+                0x0B,
+                0x20,
+                0x04,
+                0x3E,
+                0x7C,
+                0x18,
+                0x08,
+                0xCB,
+                0x27,
+                0xCB,
+                0x27,
+                0x4F,
+                0xCB,
+                0x27,
+                0x81,
+                0x80,
+                0xC1,
+                0x12,
+                0x23,
+                0x1C,
+                0x7E,
+                0xCB,
+                0x4F,
+                0x28,
+                0x03,
+                0xF0,
+                0x94,
+                0xB6,
+                0x23,
+                0x12,
+                0x1C,
+                0xCB,
+                0x47,
+                0x28,
+                0xC2,
+            ]
+        )
+        rom[0x4098 : 0x409E] = bytes([0x00, 0x00, 0x00, 0x01, 0x02, 0x03])
+        rom[0x4080 : 0x4082] = bytes([0x00, 0x05])
+        bus.cartridge.data = bytes(rom)
+        cpu._fast_rom_data = bus.cartridge.data
+        cpu._fast_rom_data_len = len(bus.cartridge.data)
+        cpu.b = 0x40
+        cpu.c = 0x80
+        cpu.d = 0xC3
+        cpu.e = 0x20
+        cpu.h = 0x40
+        cpu.l = 0x98
+        cpu.sp = 0xDFF1
+        bus.write8(0xD5CD, 0xA0)
+        bus.hram[0xFF91 - 0xFF80] = 0x50
+        bus.hram[0xFF92 - 0xFF80] = 0x20
+        bus.hram[0xFF94 - 0xFF80] = 0x80
+        bus.write8(0xC320, 0xAA)
+        bus.write8(0xC321, 0xAA)
+        bus.write8(0xC322, 0xAA)
+        bus.write8(0xC323, 0xAA)
+        bus.write8(0xC324, 0xAA)
+        bus.write8(0xC325, 0xAA)
+        bus.write8(0xC326, 0xAA)
+        bus.write8(0xC327, 0xAA)
+
+        with patch.object(cpu, "_step_prefetched_fast", wraps=cpu._step_prefetched_fast) as step_mock:
+            cpu.run(max_instructions=78)
+
+        step_mock.assert_not_called()
+        self.assertEqual([bus.read8(0xC320 + index) for index in range(8)], [
+            0x30,
+            0x58,
+            0x78,
+            0x00,
+            0x31,
+            0x5A,
+            0x7D,
+            0x83,
+        ])
+        self.assertEqual(bus.read8(0xDFEF), 0x82)
+        self.assertEqual(bus.read8(0xDFF0), 0x40)
+        self.assertEqual(cpu.a, 0x83)
+        self.assertEqual(cpu.f, FLAG_H)
+        self.assertEqual(cpu.b, 0x40)
+        self.assertEqual(cpu.c, 0x82)
+        self.assertEqual(cpu.d, 0xC3)
+        self.assertEqual(cpu.e, 0x28)
+        self.assertEqual(cpu.h, 0x40)
+        self.assertEqual(cpu.l, 0x9E)
+        self.assertEqual(cpu.pc, 0x4BAA)
+        self.assertEqual(cpu.sp, 0xDFF1)
+        self.assertEqual(cpu.instructions, 78)
+        self.assertEqual(cpu.cycles, 636)
+
+    def test_run_fast_forwards_pokemon_object_position_helper(self) -> None:
+        cpu, bus = make_mbc3_cpu(0x4BD1)
+        bus.mapper.write_rom_control(0x2000, 0x01)
+        rom = bytearray(bus.cartridge.data)
+        rom[0x4BD1 : 0x4BED] = bytes(
+            [
+                0x1C,
+                0x1C,
+                0x1A,
+                0xE0,
+                0x92,
+                0x1C,
+                0x1C,
+                0x1A,
+                0xE0,
+                0x91,
+                0x3E,
+                0x04,
+                0x83,
+                0x5F,
+                0xF0,
+                0x92,
+                0xC6,
+                0x04,
+                0xE6,
+                0xF0,
+                0x12,
+                0x1C,
+                0xF0,
+                0x91,
+                0xE6,
+                0xF0,
+                0x12,
+                0xC9,
+            ]
+        )
+        bus.cartridge.data = bytes(rom)
+        cpu._fast_rom_data = bus.cartridge.data
+        cpu._fast_rom_data_len = len(bus.cartridge.data)
+        cpu.d = 0xC1
+        cpu.e = 0x20
+        cpu.sp = 0xDFF0
+        bus.write8(0xDFF0, 0x67)
+        bus.write8(0xDFF1, 0x45)
+        bus.write8(0xC122, 0x23)
+        bus.write8(0xC124, 0x57)
+
+        with patch.object(cpu, "_step_prefetched_fast", wraps=cpu._step_prefetched_fast) as step_mock:
+            cpu.run(max_instructions=20)
+
+        step_mock.assert_not_called()
+        self.assertEqual(bus.hram[0xFF92 - 0xFF80], 0x23)
+        self.assertEqual(bus.hram[0xFF91 - 0xFF80], 0x57)
+        self.assertEqual(bus.read8(0xC128), 0x20)
+        self.assertEqual(bus.read8(0xC129), 0x50)
+        self.assertEqual(cpu.a, 0x50)
+        self.assertEqual(cpu.f, FLAG_H)
+        self.assertEqual(cpu.d, 0xC1)
+        self.assertEqual(cpu.e, 0x29)
+        self.assertEqual(cpu.pc, 0x4567)
+        self.assertEqual(cpu.sp, 0xDFF2)
+        self.assertEqual(cpu.instructions, 20)
+        self.assertEqual(cpu.cycles, 156)
+
+    def test_run_fast_forwards_pokemon_bank3_table_scan(self) -> None:
+        cpu, bus = make_mbc3_cpu(0x71AE)
+        bus.mapper.write_rom_control(0x2000, 0x03)
+        rom = bytearray(bus.cartridge.data)
+        offset = 3 * 0x4000 + (0x71AE - 0x4000)
+        rom[offset : offset + 9] = bytes(
+            [0x2A, 0xFE, 0xFF, 0x28, 0x11, 0xB8, 0x2A, 0x20, 0xF7]
+        )
+        bus.cartridge.data = bytes(rom)
+        cpu._fast_rom_data = bus.cartridge.data
+        cpu._fast_rom_data_len = len(bus.cartridge.data)
+        cpu.b = 0x30
+        cpu.h = 0xD5
+        cpu.l = 0xCE
+        bus.write8(0xD5CE, 0x10)
+        bus.write8(0xD5CF, 0xAA)
+        bus.write8(0xD5D0, 0x20)
+        bus.write8(0xD5D1, 0xBB)
+        bus.write8(0xD5D2, 0x30)
+        bus.write8(0xD5D3, 0xCC)
+
+        with patch.object(cpu, "_step_prefetched_fast", wraps=cpu._step_prefetched_fast) as step_mock:
+            cpu.run(max_instructions=18)
+
+        step_mock.assert_not_called()
+        self.assertEqual(cpu.a, 0xCC)
+        self.assertEqual(cpu.f, FLAG_Z | FLAG_N)
+        self.assertEqual(cpu.b, 0x30)
+        self.assertEqual(cpu.h, 0xD5)
+        self.assertEqual(cpu.l, 0xD4)
+        self.assertEqual(cpu.pc, 0x71B7)
+        self.assertEqual(cpu.instructions, 18)
+        self.assertEqual(cpu.cycles, 140)
+
+    def test_run_fast_forwards_pokemon_bank3_bit_test_helper(self) -> None:
+        cpu, bus = make_mbc3_cpu(0x71E6)
+        bus.mapper.write_rom_control(0x2000, 0x03)
+        rom = bytearray(bus.cartridge.data)
+        offset = 3 * 0x4000 + (0x71E6 - 0x4000)
+        rom[offset : offset + 63] = bytes(
+            [
+                0xE5,
+                0xD5,
+                0xC5,
+                0x79,
+                0x57,
+                0xE6,
+                0x07,
+                0x5F,
+                0x7A,
+                0xCB,
+                0x3F,
+                0xCB,
+                0x3F,
+                0xCB,
+                0x3F,
+                0x85,
+                0x6F,
+                0x30,
+                0x01,
+                0x24,
+                0x1C,
+                0x16,
+                0x01,
+                0x1D,
+                0x28,
+                0x04,
+                0xCB,
+                0x22,
+                0x18,
+                0xF9,
+                0x78,
+                0xA7,
+                0x28,
+                0x0B,
+                0xFE,
+                0x02,
+                0x28,
+                0x10,
+                0x7E,
+                0x47,
+                0x7A,
+                0xB0,
+                0x77,
+                0x18,
+                0x0D,
+                0x7E,
+                0x47,
+                0x7A,
+                0xEE,
+                0xFF,
+                0xA0,
+                0x77,
+                0x18,
+                0x04,
+                0x7E,
+                0x47,
+                0x7A,
+                0xA0,
+                0xC1,
+                0xD1,
+                0xE1,
+                0x4F,
+                0xC9,
+            ]
+        )
+        bus.cartridge.data = bytes(rom)
+        cpu._fast_rom_data = bus.cartridge.data
+        cpu._fast_rom_data_len = len(bus.cartridge.data)
+        cpu.b = 0x02
+        cpu.c = 0x03
+        cpu.d = 0x44
+        cpu.e = 0x55
+        cpu.h = 0xD5
+        cpu.l = 0xA6
+        cpu.sp = 0xDFF0
+        bus.write8(0xDFF0, 0x67)
+        bus.write8(0xDFF1, 0x45)
+        bus.write8(0xD5A6, 0x08)
+
+        with patch.object(cpu, "_step_prefetched_fast", wraps=cpu._step_prefetched_fast) as step_mock:
+            cpu.run(max_instructions=44)
+
+        step_mock.assert_not_called()
+        self.assertEqual([bus.read8(0xDFEA + index) for index in range(6)], [
+            0x03,
+            0x02,
+            0x55,
+            0x44,
+            0xA6,
+            0xD5,
+        ])
+        self.assertEqual(bus.read8(0xD5A6), 0x08)
+        self.assertEqual(cpu.a, 0x08)
+        self.assertEqual(cpu.f, FLAG_H)
+        self.assertEqual(cpu.b, 0x02)
+        self.assertEqual(cpu.c, 0x08)
+        self.assertEqual(cpu.d, 0x44)
+        self.assertEqual(cpu.e, 0x55)
+        self.assertEqual(cpu.h, 0xD5)
+        self.assertEqual(cpu.l, 0xA6)
+        self.assertEqual(cpu.pc, 0x4567)
+        self.assertEqual(cpu.sp, 0xDFF2)
+        self.assertEqual(cpu.instructions, 44)
+        self.assertEqual(cpu.cycles, 352)
+
+    def test_run_fast_forwards_pokemon_bank3_bit_write_helper(self) -> None:
+        cases = [
+            (0x00, 0x05, 0xFF, 0xDF, FLAG_H, 53, 428),
+            (0x01, 0x05, 0x00, 0x20, 0x00, 54, 432),
+        ]
+        for operation, bit, start_value, expected_value, expected_flags, instructions, cycles in cases:
+            with self.subTest(operation=operation):
+                cpu, bus = make_mbc3_cpu(0x71E6)
+                bus.mapper.write_rom_control(0x2000, 0x03)
+                rom = bytearray(bus.cartridge.data)
+                offset = 3 * 0x4000 + (0x71E6 - 0x4000)
+                rom[offset : offset + 63] = bytes(
+                    [
+                        0xE5,
+                        0xD5,
+                        0xC5,
+                        0x79,
+                        0x57,
+                        0xE6,
+                        0x07,
+                        0x5F,
+                        0x7A,
+                        0xCB,
+                        0x3F,
+                        0xCB,
+                        0x3F,
+                        0xCB,
+                        0x3F,
+                        0x85,
+                        0x6F,
+                        0x30,
+                        0x01,
+                        0x24,
+                        0x1C,
+                        0x16,
+                        0x01,
+                        0x1D,
+                        0x28,
+                        0x04,
+                        0xCB,
+                        0x22,
+                        0x18,
+                        0xF9,
+                        0x78,
+                        0xA7,
+                        0x28,
+                        0x0B,
+                        0xFE,
+                        0x02,
+                        0x28,
+                        0x10,
+                        0x7E,
+                        0x47,
+                        0x7A,
+                        0xB0,
+                        0x77,
+                        0x18,
+                        0x0D,
+                        0x7E,
+                        0x47,
+                        0x7A,
+                        0xEE,
+                        0xFF,
+                        0xA0,
+                        0x77,
+                        0x18,
+                        0x04,
+                        0x7E,
+                        0x47,
+                        0x7A,
+                        0xA0,
+                        0xC1,
+                        0xD1,
+                        0xE1,
+                        0x4F,
+                        0xC9,
+                    ]
+                )
+                bus.cartridge.data = bytes(rom)
+                cpu._fast_rom_data = bus.cartridge.data
+                cpu._fast_rom_data_len = len(bus.cartridge.data)
+                cpu.b = operation
+                cpu.c = bit
+                cpu.d = 0x44
+                cpu.e = 0x55
+                cpu.h = 0xD5
+                cpu.l = 0xA6
+                cpu.sp = 0xDFF0
+                bus.write8(0xDFF0, 0x34)
+                bus.write8(0xDFF1, 0x12)
+                bus.write8(0xD5A6, start_value)
+
+                with patch.object(cpu, "_step_prefetched_fast", wraps=cpu._step_prefetched_fast) as step_mock:
+                    cpu.run(max_instructions=instructions)
+
+                step_mock.assert_not_called()
+                self.assertEqual(bus.read8(0xD5A6), expected_value)
+                self.assertEqual(cpu.a, expected_value)
+                self.assertEqual(cpu.f, expected_flags)
+                self.assertEqual(cpu.b, operation)
+                self.assertEqual(cpu.c, expected_value)
+                self.assertEqual(cpu.pc, 0x1234)
+                self.assertEqual(cpu.sp, 0xDFF2)
+                self.assertEqual(cpu.instructions, instructions)
+                self.assertEqual(cpu.cycles, cycles)
+
     def test_run_bulk_halt_preserves_instruction_limit_cycles(self) -> None:
         cpu, _ = make_cpu(bytes([0x76, 0x00]))
 

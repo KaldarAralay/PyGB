@@ -324,6 +324,10 @@ class CPU:
                 or pc == 0x374F
                 or pc == 0x3872
                 or pc == 0x3AD9
+                or pc == 0x4BD1
+                or pc == 0x4B6C
+                or pc == 0x71AE
+                or pc == 0x71E6
             ):
                 hot_steps = self._fast_forward_hot_rom_sequence(
                     opcode=opcode,
@@ -966,6 +970,206 @@ class CPU:
             )
         ):
             return self._fast_forward_pokemon_text_wait_loop_alt(max_instructions, steps)
+        if (
+            opcode == 0xF0
+            and pc == 0x4B6C
+            and self._fast_rom_is_mbc3
+            and self._fast_rom_cartridge.mbc3_rom_bank % self._fast_rom_cartridge.rom_bank_count == 1
+            and self._matches_bytes(
+                pc,
+                (
+                    0xF0,
+                    0x92,
+                    0xC6,
+                    0x10,
+                    0x86,
+                    0x12,
+                    0x23,
+                    0xF0,
+                    0x91,
+                    0xC6,
+                    0x08,
+                    0x86,
+                    0x1C,
+                    0x12,
+                    0x1C,
+                    0x0A,
+                    0x03,
+                    0xC5,
+                    0x47,
+                    0xFA,
+                    0xCD,
+                    0xD5,
+                    0xCB,
+                    0x37,
+                    0xE6,
+                    0x0F,
+                    0xFE,
+                    0x0B,
+                    0x20,
+                    0x04,
+                    0x3E,
+                    0x7C,
+                    0x18,
+                    0x08,
+                    0xCB,
+                    0x27,
+                    0xCB,
+                    0x27,
+                    0x4F,
+                    0xCB,
+                    0x27,
+                    0x81,
+                    0x80,
+                    0xC1,
+                    0x12,
+                    0x23,
+                    0x1C,
+                    0x7E,
+                    0xCB,
+                    0x4F,
+                    0x28,
+                    0x03,
+                    0xF0,
+                    0x94,
+                    0xB6,
+                    0x23,
+                    0x12,
+                    0x1C,
+                    0xCB,
+                    0x47,
+                    0x28,
+                    0xC2,
+                ),
+            )
+        ):
+            return self._fast_forward_pokemon_sprite_oam_piece_loop(max_instructions, steps)
+        if (
+            opcode == 0x1C
+            and pc == 0x4BD1
+            and self._fast_rom_is_mbc3
+            and self._fast_rom_cartridge.mbc3_rom_bank % self._fast_rom_cartridge.rom_bank_count == 1
+            and self._matches_bytes(
+                pc,
+                (
+                    0x1C,
+                    0x1C,
+                    0x1A,
+                    0xE0,
+                    0x92,
+                    0x1C,
+                    0x1C,
+                    0x1A,
+                    0xE0,
+                    0x91,
+                    0x3E,
+                    0x04,
+                    0x83,
+                    0x5F,
+                    0xF0,
+                    0x92,
+                    0xC6,
+                    0x04,
+                    0xE6,
+                    0xF0,
+                    0x12,
+                    0x1C,
+                    0xF0,
+                    0x91,
+                    0xE6,
+                    0xF0,
+                    0x12,
+                    0xC9,
+                ),
+            )
+        ):
+            return self._fast_forward_pokemon_object_position_helper(max_instructions, steps)
+        if (
+            opcode == 0x2A
+            and pc == 0x71AE
+            and self._fast_rom_is_mbc3
+            and self._fast_rom_cartridge.mbc3_rom_bank % self._fast_rom_cartridge.rom_bank_count == 3
+            and self._matches_bytes(
+                pc,
+                (0x2A, 0xFE, 0xFF, 0x28, 0x11, 0xB8, 0x2A, 0x20, 0xF7),
+            )
+        ):
+            return self._fast_forward_pokemon_bank3_table_scan(max_instructions, steps)
+        if (
+            opcode == 0xE5
+            and pc == 0x71E6
+            and self._fast_rom_is_mbc3
+            and self._fast_rom_cartridge.mbc3_rom_bank % self._fast_rom_cartridge.rom_bank_count == 3
+            and self._matches_bytes(
+                pc,
+                (
+                    0xE5,
+                    0xD5,
+                    0xC5,
+                    0x79,
+                    0x57,
+                    0xE6,
+                    0x07,
+                    0x5F,
+                    0x7A,
+                    0xCB,
+                    0x3F,
+                    0xCB,
+                    0x3F,
+                    0xCB,
+                    0x3F,
+                    0x85,
+                    0x6F,
+                    0x30,
+                    0x01,
+                    0x24,
+                    0x1C,
+                    0x16,
+                    0x01,
+                    0x1D,
+                    0x28,
+                    0x04,
+                    0xCB,
+                    0x22,
+                    0x18,
+                    0xF9,
+                    0x78,
+                    0xA7,
+                    0x28,
+                    0x0B,
+                    0xFE,
+                    0x02,
+                    0x28,
+                    0x10,
+                    0x7E,
+                    0x47,
+                    0x7A,
+                    0xB0,
+                    0x77,
+                    0x18,
+                    0x0D,
+                    0x7E,
+                    0x47,
+                    0x7A,
+                    0xEE,
+                    0xFF,
+                    0xA0,
+                    0x77,
+                    0x18,
+                    0x04,
+                    0x7E,
+                    0x47,
+                    0x7A,
+                    0xA0,
+                    0xC1,
+                    0xD1,
+                    0xE1,
+                    0x4F,
+                    0xC9,
+                ),
+            )
+        ):
+            return self._fast_forward_pokemon_bank3_bit_helper(max_instructions, steps)
         if opcode == 0xF1 and pc in {0x01A7, 0x3E8D} and self._matches_bytes(
             pc,
             (0xF1, 0xE0, 0xB8, 0xEA, 0x00, 0x20, 0xC9),
@@ -1552,6 +1756,398 @@ class CPU:
         instruction_count = iterations * instructions_per_iteration
         self.instructions += instruction_count
         self._add_cycles(iterations * cycles_per_iteration)
+        return instruction_count
+
+    def _fast_forward_pokemon_sprite_oam_piece_loop(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < 34
+            or not self._can_batch_direct_memory_cycles()
+        ):
+            return 0
+
+        sp = self.sp
+        stack_low = (sp - 2) & 0xFFFF
+        stack_high = (sp - 1) & 0xFFFF
+        if (
+            not self._is_direct_fast_address(stack_low)
+            or not self._is_direct_fast_address(stack_high)
+        ):
+            return 0
+
+        max_cycles = self._fast_forward_safe_cycles(4096)
+        if max_cycles < 292:
+            return 0
+
+        bus = self.bus
+        hram = bus.hram
+        y_base = hram[0xFF92 - 0xFF80]
+        x_base = hram[0xFF91 - 0xFF80]
+        priority_mask = hram[0xFF94 - 0xFF80]
+        sprite_id = self._read8_direct_fast(0xD5CD)
+        if sprite_id is None:
+            return 0
+        sprite_nibble = ((sprite_id & 0x0F) << 4 | (sprite_id >> 4)) & 0x0F
+
+        h = self.h
+        l = self.l
+        b = self.b
+        c = self.c
+        d = self.d
+        e = self.e
+        if d != 0xC3:
+            return 0
+
+        total_instructions = 0
+        total_cycles = 0
+        final_a = self.a
+        final_f = self.f & 0xF0
+        pc = 0x4B6C
+        ran = 0
+
+        while remaining_instructions - total_instructions >= 34:
+            hl = ((h << 8) | l) & 0xFFFF
+            bc = ((b << 8) | c) & 0xFFFF
+            de = ((d << 8) | e) & 0xFFFF
+            if any(
+                not self._is_direct_fast_address((de + offset) & 0xFFFF)
+                for offset in range(4)
+            ):
+                break
+
+            y_offset = self._read8_direct_fast(hl)
+            x_offset = self._read8_direct_fast((hl + 1) & 0xFFFF)
+            tile_offset = self._read8_direct_fast(bc)
+            attr = self._read8_direct_fast((hl + 2) & 0xFFFF)
+            if None in {y_offset, x_offset, tile_offset, attr}:
+                break
+
+            attr = int(attr)
+            tile_offset = int(tile_offset)
+            if sprite_nibble == 0x0B:
+                tile = 0x7C
+                branch_instruction_adjust = -4
+                branch_cycle_adjust = -20
+                carry = 0
+            else:
+                tile_base = (sprite_nibble << 3) + (sprite_nibble << 2)
+                tile_sum = tile_base + tile_offset
+                tile = tile_sum & 0xFF
+                branch_instruction_adjust = 0
+                branch_cycle_adjust = 0
+                carry = FLAG_C if tile_sum > 0xFF else 0
+
+            rendered_attr = attr
+            attr_bit1 = bool(attr & 0x02)
+            if attr_bit1:
+                rendered_attr |= priority_mask
+                carry = 0
+            attr_bit0 = bool(rendered_attr & 0x01)
+
+            instruction_count = 38 + branch_instruction_adjust + (2 if attr_bit1 else 0)
+            cycles = (
+                (308 if attr_bit0 else 312)
+                + branch_cycle_adjust
+                + (16 if attr_bit1 else 0)
+            )
+            if total_cycles + cycles > max_cycles:
+                break
+            if total_instructions + instruction_count > remaining_instructions:
+                break
+
+            y_value = (y_base + 0x10 + int(y_offset)) & 0xFF
+            x_value = (x_base + 0x08 + int(x_offset)) & 0xFF
+            if not (
+                self._write8_direct_fast(de, y_value)
+                and self._write8_direct_fast((de + 1) & 0xFFFF, x_value)
+                and self._write8_direct_fast((de + 2) & 0xFFFF, tile)
+                and self._write8_direct_fast((de + 3) & 0xFFFF, rendered_attr)
+            ):
+                break
+
+            next_bc = (bc + 1) & 0xFFFF
+            if not (
+                self._write8_direct_fast(stack_low, next_bc & 0xFF)
+                and self._write8_direct_fast(stack_high, (next_bc >> 8) & 0xFF)
+            ):
+                break
+
+            h = ((hl + 3) >> 8) & 0xFF
+            l = (hl + 3) & 0xFF
+            b = (next_bc >> 8) & 0xFF
+            c = next_bc & 0xFF
+            e = (e + 4) & 0xFF
+            final_a = rendered_attr
+            final_f = FLAG_H | (0 if attr_bit0 else FLAG_Z) | carry
+            total_instructions += instruction_count
+            total_cycles += cycles
+            ran += 1
+            if attr_bit0:
+                pc = 0x4BAA
+                break
+
+        if ran == 0:
+            return 0
+
+        self.a = final_a
+        self.f = final_f
+        self.b = b
+        self.c = c
+        self.d = d
+        self.e = e
+        self.h = h
+        self.l = l
+        self.pc = pc
+        self.instructions += total_instructions
+        self._add_cycles(total_cycles)
+        return total_instructions
+
+    def _fast_forward_pokemon_bank3_table_scan(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < 3
+            or not self._can_batch_direct_memory_cycles()
+        ):
+            return 0
+
+        max_cycles = self._fast_forward_safe_cycles(4096)
+        if max_cycles < 28:
+            return 0
+
+        h = self.h
+        l = self.l
+        b = self.b
+        total_instructions = 0
+        total_cycles = 0
+        final_a = self.a
+        final_f = self.f & 0xF0
+        final_pc = 0x71AE
+        ran = 0
+
+        while remaining_instructions - total_instructions >= 3:
+            hl = ((h << 8) | l) & 0xFFFF
+            value = self._read8_direct_fast(hl)
+            if value is None:
+                break
+            value = int(value)
+
+            if value == 0xFF:
+                instruction_count = 3
+                cycles = 28
+                if total_cycles + cycles > max_cycles:
+                    break
+                final_a = value
+                result = (value - 0xFF) & 0xFF
+                final_f = FLAG_N | (FLAG_Z if result == 0 else 0)
+                hl = (hl + 1) & 0xFFFF
+                h = (hl >> 8) & 0xFF
+                l = hl & 0xFF
+                total_instructions += instruction_count
+                total_cycles += cycles
+                final_pc = 0x71C4
+                ran += 1
+                break
+
+            pair_value = self._read8_direct_fast((hl + 1) & 0xFFFF)
+            if pair_value is None:
+                break
+            pair_value = int(pair_value)
+            instruction_count = 6
+            cycles = 44 if value == b else 48
+            if total_cycles + cycles > max_cycles:
+                break
+            if total_instructions + instruction_count > remaining_instructions:
+                break
+
+            final_a = pair_value
+            result = (value - b) & 0xFF
+            final_f = (
+                FLAG_N
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) < (b & 0x0F) else 0)
+                | (FLAG_C if value < b else 0)
+            )
+            hl = (hl + 2) & 0xFFFF
+            h = (hl >> 8) & 0xFF
+            l = hl & 0xFF
+            total_instructions += instruction_count
+            total_cycles += cycles
+            ran += 1
+            if value == b:
+                final_pc = 0x71B7
+                break
+
+        if ran == 0:
+            return 0
+
+        self.a = final_a
+        self.f = final_f
+        self.h = h
+        self.l = l
+        self.pc = final_pc
+        self.instructions += total_instructions
+        self._add_cycles(total_cycles)
+        return total_instructions
+
+    def _fast_forward_pokemon_object_position_helper(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        instruction_count = 20
+        cycles = 156
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < instruction_count
+            or not self._can_batch_direct_memory_cycles()
+            or self._fast_forward_safe_cycles(cycles) < cycles
+        ):
+            return 0
+
+        d = self.d
+        e = self.e
+        y_address = ((d << 8) | ((e + 2) & 0xFF)) & 0xFFFF
+        x_address = ((d << 8) | ((e + 4) & 0xFF)) & 0xFFFF
+        snapped_y_address = ((d << 8) | ((e + 8) & 0xFF)) & 0xFFFF
+        snapped_x_address = ((d << 8) | ((e + 9) & 0xFF)) & 0xFFFF
+        sp = self.sp
+        if any(
+            not self._is_direct_fast_address(address)
+            for address in (
+                y_address,
+                x_address,
+                snapped_y_address,
+                snapped_x_address,
+                sp,
+                (sp + 1) & 0xFFFF,
+            )
+        ):
+            return 0
+
+        y_value = self._read8_direct_fast(y_address)
+        x_value = self._read8_direct_fast(x_address)
+        if None in {y_value, x_value}:
+            return 0
+        y_value = int(y_value)
+        x_value = int(x_value)
+        snapped_y = (y_value + 4) & 0xF0
+        snapped_x = x_value & 0xF0
+
+        hram = self.bus.hram
+        hram[0xFF92 - 0xFF80] = y_value
+        hram[0xFF91 - 0xFF80] = x_value
+        if not (
+            self._write8_direct_fast(snapped_y_address, snapped_y)
+            and self._write8_direct_fast(snapped_x_address, snapped_x)
+        ):
+            return 0
+
+        return_low = self._read8_direct_fast(sp)
+        return_high = self._read8_direct_fast((sp + 1) & 0xFFFF)
+        if None in {return_low, return_high}:
+            return 0
+
+        self.a = snapped_x
+        self.f = FLAG_H | (FLAG_Z if snapped_x == 0 else 0)
+        self.e = (e + 9) & 0xFF
+        self.sp = (sp + 2) & 0xFFFF
+        self.pc = int(return_low) | (int(return_high) << 8)
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_pokemon_bank3_bit_helper(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        bit_index = self.c & 0x07
+        if self.b == 0:
+            instruction_count = 33 + bit_index * 4
+            cycles = 268 + bit_index * 32
+        elif self.b == 0x02:
+            instruction_count = 32 + bit_index * 4
+            cycles = 256 + bit_index * 32
+        else:
+            instruction_count = 34 + bit_index * 4
+            cycles = 272 + bit_index * 32
+
+        byte_offset = self.c >> 3
+        target_address = (self.hl + byte_offset) & 0xFFFF
+        if self.l + byte_offset > 0xFF:
+            instruction_count += 1
+
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if (
+            remaining_instructions < instruction_count
+            or not self._can_batch_direct_memory_cycles()
+            or self._fast_forward_safe_cycles(cycles) < cycles
+        ):
+            return 0
+
+        sp = self.sp
+        stack_addresses = tuple((sp + offset) & 0xFFFF for offset in range(-6, 2))
+        if target_address in stack_addresses:
+            return 0
+        if any(not self._is_direct_fast_address(address) for address in stack_addresses):
+            return 0
+
+        return_low = self._read8_direct_fast(sp)
+        return_high = self._read8_direct_fast((sp + 1) & 0xFFFF)
+        memory_value = self._read8_direct_fast(target_address)
+        if None in {return_low, return_high, memory_value}:
+            return 0
+
+        memory_value = int(memory_value)
+        mask = 1 << bit_index
+        write_value: int | None = None
+        if self.b == 0:
+            result = memory_value & (mask ^ 0xFF)
+            final_f = FLAG_H | (FLAG_Z if result == 0 else 0)
+            write_value = result
+        elif self.b == 0x02:
+            result = memory_value & mask
+            final_f = FLAG_H | (FLAG_Z if result == 0 else 0)
+        else:
+            result = memory_value | mask
+            final_f = FLAG_Z if result == 0 else 0
+            write_value = result
+
+        if not (
+            self._write8_direct_fast((sp - 1) & 0xFFFF, self.h)
+            and self._write8_direct_fast((sp - 2) & 0xFFFF, self.l)
+            and self._write8_direct_fast((sp - 3) & 0xFFFF, self.d)
+            and self._write8_direct_fast((sp - 4) & 0xFFFF, self.e)
+            and self._write8_direct_fast((sp - 5) & 0xFFFF, self.b)
+            and self._write8_direct_fast((sp - 6) & 0xFFFF, self.c)
+        ):
+            return 0
+        if write_value is not None and not self._write8_direct_fast(target_address, write_value):
+            return 0
+
+        self.a = result & 0xFF
+        self.f = final_f
+        self.c = result & 0xFF
+        self.sp = (sp + 2) & 0xFFFF
+        self.pc = int(return_low) | (int(return_high) << 8)
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
         return instruction_count
 
     def _fast_forward_pokemon_bank_restore_return(
