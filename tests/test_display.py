@@ -187,9 +187,9 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(frame_delay_ms(1 / 60, 0.0040), 13)
 
     def test_audio_pacing_waits_only_above_high_watermark(self) -> None:
-        self.assertEqual(audio_pacing_delay_ms(238.0), 0)
-        self.assertEqual(audio_pacing_delay_ms(238.1), 14)
-        self.assertEqual(audio_pacing_delay_ms(255.0), 30)
+        self.assertEqual(audio_pacing_delay_ms(340.0), 0)
+        self.assertEqual(audio_pacing_delay_ms(340.1), 41)
+        self.assertEqual(audio_pacing_delay_ms(360.0), 60)
 
     def test_framebuffer_rows_map_dmg_shades_to_tk_colors(self) -> None:
         rows = framebuffer_to_tk_rows([[0, 1, 2, 3]])

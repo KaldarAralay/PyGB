@@ -66,7 +66,7 @@ class BufferedAudioPlayer:
         sample_rate: int,
         chunk_ms: int = 20,
         target_buffer_ms: int = 100,
-        max_buffer_ms: int = 250,
+        max_buffer_ms: int = 380,
         min_buffer_ms: int = 20,
         backend: PCMOutputBackend | None = None,
     ) -> None:

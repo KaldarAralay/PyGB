@@ -304,6 +304,27 @@ class CPU:
                     if nop_steps:
                         steps += nop_steps
                         continue
+            if (
+                pc == 0x00B5
+                or pc == 0x2670
+                or pc == 0x2649
+                or pc == 0x1837
+                or pc == 0x25C4
+                or pc == 0x25D8
+                or pc == 0x276D
+                or pc == 0x36E2
+            ):
+                hot_steps = self._fast_forward_hot_rom_sequence(
+                    opcode=opcode,
+                    max_instructions=max_instructions,
+                    steps=steps,
+                    trace=trace,
+                    step_mode=step_mode,
+                    after_step=after_step,
+                )
+                if hot_steps:
+                    steps += hot_steps
+                    continue
             if fast_step:
                 self._step_prefetched_fast(opcode)
             else:
@@ -601,6 +622,626 @@ class CPU:
         self.pc = final_pc if completed else pc
         cycles = (iterations - 1) * taken_cycles + (final_cycles if completed else taken_cycles)
         instruction_count = iterations * instructions_per_iteration
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_hot_rom_sequence(
+        self,
+        *,
+        opcode: int,
+        max_instructions: int | None,
+        steps: int,
+        trace: bool,
+        step_mode: bool,
+        after_step,
+    ) -> int:
+        if trace or step_mode or after_step is not None:
+            return 0
+        if self.halted or self.stopped or self._halt_bug or self._ime_delay:
+            return 0
+        if self.ime and self._pending_interrupts():
+            return 0
+        pc = self.pc
+        if opcode == 0x2A and pc == 0x00B5 and self._matches_bytes(
+            pc,
+            (0x2A, 0x12, 0x13, 0x0B, 0x79, 0xB0, 0x20, 0xF8, 0xC9),
+        ):
+            return self._fast_forward_hot_copy_loop(max_instructions, steps, duplicate=False)
+        if opcode == 0x2A and pc == 0x1837 and self._matches_bytes(
+            pc,
+            (0x2A, 0x12, 0x13, 0x12, 0x13, 0x0B, 0x79, 0xB0, 0x20, 0xF6),
+        ):
+            return self._fast_forward_hot_copy_loop(max_instructions, steps, duplicate=True)
+        if opcode == 0xFA and pc == 0x2670 and self._matches_bytes(
+            pc,
+            (
+                0xFA,
+                0xA6,
+                0xD0,
+                0x3D,
+                0x20,
+                0x08,
+                0xCD,
+                0x8B,
+                0x26,
+                0xEA,
+                0xA5,
+                0xD0,
+                0x3E,
+                0x08,
+                0xEA,
+                0xA6,
+                0xD0,
+                0xFA,
+                0xA5,
+                0xD0,
+                0x07,
+                0xEA,
+                0xA5,
+                0xD0,
+                0xE6,
+                0x01,
+                0xC9,
+            ),
+        ):
+            return self._fast_forward_hot_bitstream_step(max_instructions, steps)
+        if opcode == 0x5F and pc == 0x2649 and self._matches_bytes(
+            pc,
+            (
+                0x5F,
+                0xFA,
+                0xA7,
+                0xD0,
+                0xA7,
+                0x28,
+                0x14,
+                0xFE,
+                0x02,
+                0x38,
+                0x08,
+                0x28,
+                0x0C,
+                0xCB,
+                0x0B,
+                0xCB,
+                0x0B,
+                0x18,
+                0x08,
+                0xCB,
+                0x23,
+                0xCB,
+                0x23,
+                0x18,
+                0x02,
+                0xCB,
+                0x33,
+                0xFA,
+                0xAD,
+                0xD0,
+                0x6F,
+                0xFA,
+                0xAE,
+                0xD0,
+                0x67,
+                0x7E,
+                0xB3,
+                0x77,
+                0xC9,
+            ),
+        ):
+            return self._fast_forward_hot_or_mask_step(max_instructions, steps)
+        if opcode == 0x43 and pc == 0x25C4 and self._matches_bytes(
+            pc,
+            (
+                0x43,
+                0xAF,
+                0xCD,
+                0x49,
+                0x26,
+                0x58,
+                0xCD,
+                0xD8,
+                0x25,
+                0x1B,
+                0x7A,
+                0xA7,
+                0x20,
+                0x02,
+                0x7B,
+                0xA7,
+                0x20,
+                0xEE,
+                0x18,
+                0xA8,
+            ),
+        ):
+            return self._fast_forward_hot_zero_mask_loop(max_instructions, steps)
+        if opcode == 0xFA and pc == 0x25D8 and self._matches_bytes(
+            pc,
+            (
+                0xFA,
+                0xA4,
+                0xD0,
+                0x47,
+                0xFA,
+                0xA2,
+                0xD0,
+                0x3C,
+                0xB8,
+                0x28,
+                0x13,
+                0xEA,
+                0xA2,
+                0xD0,
+                0xFA,
+                0xAD,
+                0xD0,
+                0x3C,
+                0xEA,
+                0xAD,
+                0xD0,
+                0xC0,
+            ),
+        ):
+            return self._fast_forward_hot_counter_step(max_instructions, steps)
+        if opcode == 0xCB and pc == 0x276D and self._matches_bytes(
+            pc,
+            (
+                0xCB,
+                0x3F,
+                0x0E,
+                0x00,
+                0x30,
+                0x02,
+                0x0E,
+                0x01,
+                0x6F,
+                0xFA,
+                0xAA,
+                0xD0,
+                0xA7,
+                0x28,
+                0x04,
+                0xCB,
+                0x5B,
+                0x18,
+                0x02,
+                0xCB,
+                0x43,
+                0x5D,
+                0x20,
+                0x09,
+                0xFA,
+                0xB1,
+                0xD0,
+                0x6F,
+                0xFA,
+                0xB2,
+                0xD0,
+                0x18,
+                0x07,
+                0xFA,
+                0xB3,
+                0xD0,
+                0x6F,
+                0xFA,
+                0xB4,
+                0xD0,
+                0x67,
+                0x7B,
+                0x85,
+                0x6F,
+                0x30,
+                0x01,
+                0x24,
+                0x7E,
+                0xCB,
+                0x41,
+                0x20,
+                0x02,
+                0xCB,
+                0x37,
+                0xE6,
+                0x0F,
+                0x5F,
+                0xC9,
+            ),
+        ):
+            return self._fast_forward_hot_nibble_fetch_step(max_instructions, steps)
+        if opcode == 0x7A and pc == 0x36E2 and self._matches_bytes(
+            pc,
+            (0x7A, 0x22, 0x0B, 0x78, 0xB1, 0x20, 0xF9),
+        ):
+            return self._fast_forward_hot_fill_loop(max_instructions, steps)
+        return 0
+
+    def _fast_forward_hot_bitstream_step(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        instruction_count = 9
+        cycles = 108
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if remaining_instructions < instruction_count:
+            return 0
+        if self._fast_forward_safe_cycles(cycles) < cycles:
+            return 0
+        sp = self.sp
+        sp_next = (sp + 1) & 0xFFFF
+        if not self._is_direct_fast_address(sp) or not self._is_direct_fast_address(sp_next):
+            return 0
+        lo = self._read8_direct_fast(sp)
+        hi = self._read8_direct_fast(sp_next)
+        if lo is None or hi is None:
+            return 0
+
+        wram = self.bus.wram
+        counter_index = 0xD0A6 - 0xC000
+        counter = (wram[counter_index] - 1) & 0xFF
+        if counter == 0:
+            return 0
+        sample_index = 0xD0A5 - 0xC000
+        sample = wram[sample_index]
+        carry = (sample >> 7) & 1
+        sample = ((sample << 1) | carry) & 0xFF
+        wram[counter_index] = counter
+        wram[sample_index] = sample
+        self.a = sample & 0x01
+        self.f = (FLAG_Z if self.a == 0 else 0) | FLAG_H
+        self.sp = (sp + 2) & 0xFFFF
+        self.pc = lo | (hi << 8)
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_hot_counter_step(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        instruction_count = 11
+        cycles = 124
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if remaining_instructions < instruction_count:
+            return 0
+        if self._fast_forward_safe_cycles(cycles) < cycles:
+            return 0
+        sp = self.sp
+        sp_next = (sp + 1) & 0xFFFF
+        if not self._is_direct_fast_address(sp) or not self._is_direct_fast_address(sp_next):
+            return 0
+        lo = self._read8_direct_fast(sp)
+        hi = self._read8_direct_fast(sp_next)
+        if lo is None or hi is None:
+            return 0
+
+        wram = self.bus.wram
+        limit = wram[0xD0A4 - 0xC000]
+        next_index = (wram[0xD0A2 - 0xC000] + 1) & 0xFF
+        if next_index == limit:
+            return 0
+        old_low_address = wram[0xD0AD - 0xC000]
+        next_low_address = (old_low_address + 1) & 0xFF
+        if next_low_address == 0:
+            return 0
+
+        wram[0xD0A2 - 0xC000] = next_index
+        wram[0xD0AD - 0xC000] = next_low_address
+        self.a = next_low_address
+        self.b = limit
+        self.f = (
+            (FLAG_H if (old_low_address & 0x0F) == 0x0F else 0)
+            | (FLAG_C if next_index < limit else 0)
+        )
+        self.sp = (sp + 2) & 0xFFFF
+        self.pc = lo | (hi << 8)
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_hot_copy_loop(
+        self,
+        max_instructions: int | None,
+        steps: int,
+        *,
+        duplicate: bool,
+    ) -> int:
+        if self.bc <= 1:
+            return 0
+        if self.bus.ppu.lcd_enabled or not self._can_batch_direct_memory_cycles():
+            return 0
+        cycles_per_iteration = 68 if duplicate else 52
+        instructions_per_iteration = 9 if duplicate else 7
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        iterations = min(
+            self.bc - 1,
+            4096 // cycles_per_iteration,
+            remaining_instructions // instructions_per_iteration,
+        )
+        if iterations <= 0:
+            return 0
+        safe_cycles = self._fast_forward_safe_cycles(iterations * cycles_per_iteration)
+        iterations = min(iterations, safe_cycles // cycles_per_iteration)
+        if iterations <= 0:
+            return 0
+
+        source = self.hl
+        destination = self.de
+        for offset in range(iterations):
+            value = self._read8_direct_fast((source + offset) & 0xFFFF, 1)
+            if value is None:
+                return 0
+            write_address = (destination + (offset * 2 if duplicate else offset)) & 0xFFFF
+            if not self._write8_direct_fast(write_address, value, 1):
+                return 0
+            if duplicate and not self._write8_direct_fast((write_address + 1) & 0xFFFF, value, 1):
+                return 0
+
+        self.hl = (source + iterations) & 0xFFFF
+        self.de = (destination + iterations * (2 if duplicate else 1)) & 0xFFFF
+        self.bc = (self.bc - iterations) & 0xFFFF
+        self.a = (self.b | self.c) & 0xFF
+        self.f = 0
+        instruction_count = iterations * instructions_per_iteration
+        self.instructions += instruction_count
+        self._add_cycles(iterations * cycles_per_iteration)
+        return instruction_count
+
+    def _fast_forward_hot_fill_loop(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        if self.bc <= 1:
+            return 0
+        if self.bus.ppu.lcd_enabled or not self._can_batch_direct_memory_cycles():
+            return 0
+        cycles_per_iteration = 40
+        instructions_per_iteration = 6
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        iterations = min(
+            self.bc - 1,
+            4096 // cycles_per_iteration,
+            remaining_instructions // instructions_per_iteration,
+        )
+        if iterations <= 0:
+            return 0
+        safe_cycles = self._fast_forward_safe_cycles(iterations * cycles_per_iteration)
+        iterations = min(iterations, safe_cycles // cycles_per_iteration)
+        if iterations <= 0:
+            return 0
+
+        address = self.hl
+        value = self.d
+        for offset in range(iterations):
+            if not self._write8_direct_fast((address + offset) & 0xFFFF, value, 1):
+                return 0
+
+        self.hl = (address + iterations) & 0xFFFF
+        self.bc = (self.bc - iterations) & 0xFFFF
+        self.a = (self.b | self.c) & 0xFF
+        self.f = 0
+        instruction_count = iterations * instructions_per_iteration
+        self.instructions += instruction_count
+        self._add_cycles(iterations * cycles_per_iteration)
+        return instruction_count
+
+    def _fast_forward_hot_zero_mask_loop(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        wram = self.bus.wram
+        de_value = self.de
+        if de_value <= 1:
+            return 0
+        mode = wram[0xD0A7 - 0xC000]
+        if mode == 0:
+            or_cycles = 112
+            or_instructions = 12
+        elif mode == 1:
+            or_cycles = 156
+            or_instructions = 17
+        elif mode == 2:
+            or_cycles = 144
+            or_instructions = 16
+        else:
+            or_cycles = 160
+            or_instructions = 18
+
+        limit = wram[0xD0A4 - 0xC000]
+        counter = wram[0xD0A2 - 0xC000]
+        low_address = wram[0xD0AD - 0xC000]
+        high_address = wram[0xD0AE - 0xC000]
+        first_address = low_address | (high_address << 8)
+        if not self._is_direct_fast_address(first_address):
+            return 0
+
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        max_iterations = min(de_value - 1, 16)
+        total_cycles = 0
+        instruction_count = 0
+        iterations = 0
+        next_de = de_value
+        next_counter = counter
+        next_low_address = low_address
+        last_address = first_address
+        while iterations < max_iterations:
+            candidate_counter = (next_counter + 1) & 0xFF
+            if candidate_counter == limit:
+                break
+            candidate_low_address = (next_low_address + 1) & 0xFF
+            if candidate_low_address == 0:
+                break
+            candidate_de = (next_de - 1) & 0xFFFF
+            if candidate_de == 0:
+                break
+            last_address = next_low_address | (high_address << 8)
+            if not self._is_direct_fast_address(last_address):
+                break
+            loop_cycles = or_cycles + (224 if (candidate_de >> 8) else 228)
+            loop_instructions = or_instructions + (21 if (candidate_de >> 8) else 23)
+            if total_cycles + loop_cycles > 4096:
+                break
+            if instruction_count + loop_instructions > remaining_instructions:
+                break
+            total_cycles += loop_cycles
+            instruction_count += loop_instructions
+            iterations += 1
+            next_de = candidate_de
+            next_counter = candidate_counter
+            next_low_address = candidate_low_address
+
+        if iterations == 0:
+            return 0
+        safe_cycles = self._fast_forward_safe_cycles(total_cycles)
+        while iterations and total_cycles > safe_cycles:
+            loop_cycles = or_cycles + (224 if (next_de >> 8) else 228)
+            loop_instructions = or_instructions + (21 if (next_de >> 8) else 23)
+            total_cycles -= loop_cycles
+            instruction_count -= loop_instructions
+            next_de = (next_de + 1) & 0xFFFF
+            next_counter = (next_counter - 1) & 0xFF
+            next_low_address = (next_low_address - 1) & 0xFF
+            iterations -= 1
+        if iterations == 0:
+            return 0
+        last_address = ((next_low_address - 1) & 0xFF) | (high_address << 8)
+
+        wram[0xD0A2 - 0xC000] = next_counter
+        wram[0xD0AD - 0xC000] = next_low_address
+        self.de = next_de
+        self.b = limit
+        self.h = (last_address >> 8) & 0xFF
+        self.l = last_address & 0xFF
+        self.a = self.d if self.d != 0 else self.e
+        self.f = FLAG_H
+        self.pc = 0x25C4
+        self.instructions += instruction_count
+        self._add_cycles(total_cycles)
+        return instruction_count
+
+    def _fast_forward_hot_nibble_fetch_step(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        wram = self.bus.wram
+        if wram[0xD0AA - 0xC000] != 0:
+            return 0
+
+        old_a = self.a
+        shifted = old_a >> 1
+        use_high_table = bool(self.e & 0x01)
+        base_address = (
+            wram[0xD0B3 - 0xC000] | (wram[0xD0B4 - 0xC000] << 8)
+            if use_high_table
+            else wram[0xD0B1 - 0xC000] | (wram[0xD0B2 - 0xC000] << 8)
+        )
+        address = (base_address + shifted) & 0xFFFF
+        address_carry = ((base_address & 0xFF) + shifted) > 0xFF
+        cycles = 212 if use_high_table else 220
+        instruction_count = (25 if use_high_table else 26) + int(address_carry)
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if remaining_instructions < instruction_count:
+            return 0
+        if self._fast_forward_safe_cycles(cycles) < cycles:
+            return 0
+        sp = self.sp
+        sp_next = (sp + 1) & 0xFFFF
+        if not self._is_direct_fast_address(sp) or not self._is_direct_fast_address(sp_next):
+            return 0
+        lo = self._read8_direct_fast(sp)
+        hi = self._read8_direct_fast(sp_next)
+        if lo is None or hi is None:
+            return 0
+        value = self._read8_direct_fast(address, 8)
+        if value is None:
+            return 0
+
+        if old_a & 0x01:
+            nibble = value & 0x0F
+        else:
+            nibble = (value >> 4) & 0x0F
+        self.a = nibble
+        self.c = old_a & 0x01
+        self.e = nibble
+        self.h = (address >> 8) & 0xFF
+        self.l = address & 0xFF
+        self.f = (FLAG_Z if nibble == 0 else 0) | FLAG_H
+        self.sp = (sp + 2) & 0xFFFF
+        self.pc = lo | (hi << 8)
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_hot_or_mask_step(
+        self,
+        max_instructions: int | None,
+        steps: int,
+    ) -> int:
+        wram = self.bus.wram
+        mode = wram[0xD0A7 - 0xC000]
+        if mode == 0:
+            cycles = 112
+            instruction_count = 12
+            mask = self.a
+        elif mode == 1:
+            cycles = 156
+            instruction_count = 17
+            mask = (self.a << 2) & 0xFF
+        elif mode == 2:
+            cycles = 144
+            instruction_count = 16
+            mask = ((self.a & 0x0F) << 4) | (self.a >> 4)
+        else:
+            cycles = 160
+            instruction_count = 18
+            mask = ((self.a >> 2) | ((self.a & 0x03) << 6)) & 0xFF
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if remaining_instructions < instruction_count:
+            return 0
+        if self._fast_forward_safe_cycles(cycles) < cycles:
+            return 0
+        sp = self.sp
+        sp_next = (sp + 1) & 0xFFFF
+        if not self._is_direct_fast_address(sp) or not self._is_direct_fast_address(sp_next):
+            return 0
+        lo = self._read8_direct_fast(sp)
+        hi = self._read8_direct_fast(sp_next)
+        if lo is None or hi is None:
+            return 0
+
+        address = wram[0xD0AD - 0xC000] | (wram[0xD0AE - 0xC000] << 8)
+        value = self._read8_direct_fast(address, 8)
+        if value is None:
+            return 0
+        result = value | mask
+        if not self._write8_direct_fast(address, result, 8):
+            return 0
+        self.a = result
+        self.e = mask
+        self.h = (address >> 8) & 0xFF
+        self.l = address & 0xFF
+        self.f = FLAG_Z if result == 0 else 0
+        self.sp = (sp + 2) & 0xFFFF
+        self.pc = lo | (hi << 8)
         self.instructions += instruction_count
         self._add_cycles(cycles)
         return instruction_count

@@ -19,8 +19,8 @@ DMG_FPS = 4_194_304 / (154 * 456)
 # Windows/Tk timers often oversleep short 4-10 ms delays; after_idle gives
 # steadier gameplay pacing and live audio still applies its own queue backstop.
 MIN_RELIABLE_TK_DELAY_SECONDS = 0.010
-LIVE_AUDIO_TARGET_QUEUE_MS = 225.0
-LIVE_AUDIO_HIGH_WATERMARK_MS = 238.0
+LIVE_AUDIO_TARGET_QUEUE_MS = 300.0
+LIVE_AUDIO_HIGH_WATERMARK_MS = 340.0
 TK_DMG_COLORS = tuple(f"#{red:02x}{green:02x}{blue:02x}" for red, green, blue in DMG_GRAYSCALE)
 PPM_DMG_PIXELS = tuple(bytes(rgb) for rgb in DMG_GRAYSCALE)
 PPM_SCREEN_HEADER = f"P6\n{SCREEN_WIDTH} {SCREEN_HEIGHT}\n255\n".encode("ascii")
@@ -69,7 +69,7 @@ class DisplayConfig:
     profile_interval: int = 60
     audio_enabled: bool = False
     audio_sample_rate: int = DEFAULT_SAMPLE_RATE
-    audio_buffer_ms: int = 100
+    audio_buffer_ms: int = 300
     audio_chunk_ms: int = 20
     audio_capture_path: Path | None = None
 
@@ -254,6 +254,14 @@ class TkDisplay:
         self._profile_max_audio_queue_ms = 0.0
         self._profile_total_seconds = 0.0
         self._profile_audio_stats: AudioPlaybackStats | None = None
+        self._profile_spike_total_seconds = 0.0
+        self._profile_spike_run_seconds = 0.0
+        self._profile_spike_draw_seconds = 0.0
+        self._profile_spike_audio_seconds = 0.0
+        self._profile_spike_cpu_instructions = 0
+        self._profile_spike_cpu_cycles = 0
+        self._profile_spike_audio_queue_ms: float | None = None
+        self._profile_spike_cause = "none"
         self._profile_report_started = time.perf_counter()
         self._audio_capture: WavAudioWriter | None = None
         self.emulator.set_buttons(self.pressed)
@@ -511,6 +519,26 @@ class TkDisplay:
                 self._profile_max_audio_queue_ms,
                 self._profile_audio_stats.queued_ms,
             )
+        if total_seconds > self._profile_spike_total_seconds:
+            self._profile_spike_total_seconds = total_seconds
+            self._profile_spike_run_seconds = run_seconds
+            self._profile_spike_draw_seconds = draw_seconds
+            self._profile_spike_audio_seconds = audio_seconds
+            self._profile_spike_cpu_instructions = cpu_instructions
+            self._profile_spike_cpu_cycles = cpu_cycles
+            self._profile_spike_audio_queue_ms = (
+                audio_stats.queued_ms if audio_stats is not None else None
+            )
+            self._profile_spike_cause = self._profile_spike_cause_for_frame(
+                run_seconds,
+                draw_seconds,
+                audio_seconds,
+                cpu_instructions,
+                bus_profile,
+                ppu_profile,
+                apu_profile,
+                audio_stats,
+            )
         if self._profile_frames < self.config.profile_interval:
             return
 
@@ -555,12 +583,20 @@ class TkDisplay:
             f"apu_dropped_samples={self._profile_apu_dropped_samples}",
             f"active_ms={self._profile_total_seconds / frames * 1000:.2f}",
             f"wall_fps={frames / wall_seconds if wall_seconds > 0 else 0.0:.2f}",
+            f"spike_ms={self._profile_spike_total_seconds * 1000:.2f}",
+            f"spike_run_ms={self._profile_spike_run_seconds * 1000:.2f}",
+            f"spike_draw_ms={self._profile_spike_draw_seconds * 1000:.2f}",
+            f"spike_audio_ms={self._profile_spike_audio_seconds * 1000:.2f}",
+            f"spike_cpu_instr={self._profile_spike_cpu_instructions}",
+            f"spike_cpu_cycles={self._profile_spike_cpu_cycles}",
+            f"spike_cause={self._profile_spike_cause}",
         ]
         if self._profile_audio_stats is not None:
             parts.extend(
                 [
                     f"audio_queue_ms={self._profile_audio_stats.queued_ms:.1f}",
                     f"audio_queue_range_ms={(self._profile_min_audio_queue_ms or 0.0):.1f}-{self._profile_max_audio_queue_ms:.1f}",
+                    f"spike_audio_queue_ms={(self._profile_spike_audio_queue_ms or 0.0):.1f}",
                     f"audio_underruns={self._profile_audio_stats.underruns}",
                     f"audio_low_buffer_events={self._profile_audio_stats.low_buffer_events}",
                     f"audio_dropped={self._profile_audio_stats.dropped_frames}",
@@ -610,7 +646,54 @@ class TkDisplay:
         self._profile_max_audio_queue_ms = 0.0
         self._profile_total_seconds = 0.0
         self._profile_audio_stats = None
+        self._profile_spike_total_seconds = 0.0
+        self._profile_spike_run_seconds = 0.0
+        self._profile_spike_draw_seconds = 0.0
+        self._profile_spike_audio_seconds = 0.0
+        self._profile_spike_cpu_instructions = 0
+        self._profile_spike_cpu_cycles = 0
+        self._profile_spike_audio_queue_ms = None
+        self._profile_spike_cause = "none"
         self._profile_report_started = now
+
+    def _profile_spike_cause_for_frame(
+        self,
+        run_seconds: float,
+        draw_seconds: float,
+        audio_seconds: float,
+        cpu_instructions: int,
+        bus_profile,
+        ppu_profile,
+        apu_profile,
+        audio_stats: AudioPlaybackStats | None,
+    ) -> str:
+        if audio_stats is not None and audio_stats.queued_ms < 80.0:
+            return "audio-queue-low"
+        if draw_seconds > max(run_seconds, audio_seconds) and draw_seconds >= 0.003:
+            return "draw-upload"
+        if audio_seconds > max(run_seconds, draw_seconds) and audio_seconds >= 0.003:
+            return "audio-submit"
+        if ppu_profile is not None:
+            window_pixels = ppu_profile.window_fast_pixels + ppu_profile.window_slow_pixels
+            if window_pixels and ppu_profile.sprite_pixels:
+                return "ppu-window-sprites"
+            if ppu_profile.sprite_pixels or ppu_profile.selected_sprites:
+                return "ppu-sprites"
+            if window_pixels:
+                return "ppu-window"
+            if ppu_profile.bg_slow_pixels:
+                return "ppu-bg-slow"
+        if bus_profile is not None and bus_profile.slow_system_counter_cycles:
+            return "bus-slow"
+        if apu_profile is not None and (
+            apu_profile.register_writes
+            or apu_profile.channel_triggers
+            or apu_profile.channel_disables
+        ):
+            return "apu-events"
+        if cpu_instructions:
+            return "cpu-run"
+        return "none"
 
     def _reached_frame_limit(self) -> bool:
         if self.max_frames is None:
