@@ -2,6 +2,8 @@
 
 Date: 2026-05-20
 
+Status note, 2026-05-22: this is a historical audit for the Stage 1 CPU milestone. Current project status, real-ROM evidence, audio/display status, and active roadmap live in `docs\compatibility.md` and `docs\next-stages.md`.
+
 Scope source: `1st stage.txt`
 
 ## Requirement Evidence
@@ -27,15 +29,14 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 
 Latest verification notes after the mode-3 window missed-trigger, CPU per-access/control-flow timing coverage, strict decoded-instruction cycle accounting, per-cycle bus/PPU scheduling with boundary-cycle DMA visibility, STOP divider/timer freeze coverage, line-latched OAM DMA sprite-hiding/timing unit coverage, header-driven cartridge mapper capability profile/dispatch coverage, ROM-only no-RAM behavior coverage, MBC3 0-7 RAM-bank selection and 64 KiB RAM coverage, signed APU DAC mixer coverage, initial APU high-pass filter coverage, APU DIV-APU frame-step length clocking and `DIV` write falling-edge coverage, APU envelope trigger timing coverage, APU CH1 sweep negate/shift-zero coverage, active CH3 wave RAM access coverage, CH3 playback-delay coverage, and CH4 clock-shift stop coverage:
 
-- Current unit suite: 208 unit tests passed with `.\.tools\python-3.12.4-embed-amd64\python.exe -B -m unittest discover -v`.
+- Current unit suite at the time of the latest full project verification: 301 unit tests passed with `.\.tools\python-3.12.4-embed-amd64\python.exe -B -m unittest discover -v`.
 - Current Blargg CPU verification passed individual `cpu_instrs` ROMs `01` through `11`.
 - Current Blargg CPU verification passed combined `cpu_instrs.gb` with serial output:
   `cpu_instrs\n\n01:ok  02:ok  03:ok  04:ok  05:ok  06:ok  07:ok  08:ok  09:ok  10:ok  11:ok  \n\nPassed`
 
 ## Out Of Scope For This Stage
 
-- PPU rendering.
-- Full APU/audio host output and mature hardware-accurate analog filtering.
-- Full cartridge hardware beyond the minimal MBC1 ROM banking needed by the CPU test ROM.
-- Pygame/window UI.
-- Gameplay compatibility.
+- PPU rendering was out of scope for Stage 1, but now has strict selected PPU-gate coverage. See `docs\compatibility.md`.
+- Full APU/audio host output was out of scope for Stage 1; live audio now exists, while mature hardware-accurate analog filtering remains pending.
+- Full cartridge hardware beyond the minimal MBC1 ROM banking needed by the CPU test ROM was out of scope for Stage 1; common mapper support is now substantially broader.
+- Gameplay compatibility was out of scope for Stage 1; Pokemon Red is now the primary real-ROM regression target.

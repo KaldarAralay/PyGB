@@ -1,36 +1,57 @@
 # Compatibility Matrix
 
-Date: 2026-05-21
+Date: 2026-05-22
 
-This matrix tracks evidence in this repository. `Pass` means a ROM suite or
-component behavior is currently verified by an automated test. `Partial` means
-the subsystem has useful coverage but is not hardware-complete. `Pending` means
-the emulator has no current compatibility claim for that target.
+This matrix tracks evidence in this repository. `Pass` means the target is currently covered by an automated or repeatable regression check. `Playable smoke` means a commercial ROM is known to boot and run interactively but is not a compatibility oracle. `Partial` means the subsystem is useful but not hardware-complete. `Pending` means there is no current compatibility claim.
 
-## Test Suites
+## Test Suites And Gates
 
 | Target | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| Unit test suite | Pass | `.\.tools\python-3.12.4-embed-amd64\python.exe -B -m unittest discover -v` | Ran 254 tests on 2026-05-21. Covers CPU helpers, bus timing, PPU unit behavior, cartridge mappers, runtime, display trace toggles, joypad, APU model pieces, and the `dmg-acid2` regression. |
-| Blargg `cpu_instrs` individual ROMs `01` through `11` | Pass | `scripts\verify_cpu.py`, direct `main.py --stop-on-serial-result` runs | Current runs passed all individual CPU instruction ROMs. |
-| Blargg combined `cpu_instrs.gb` | Pass | Direct `main.py --stop-on-serial-result` run | Current run reached the serial `Passed` result. |
-| `dmg-acid2` | Pass | `.\.tools\python-3.12.4-embed-amd64\python.exe -B -m unittest tests.test_dmg_acid2 -v` | The first completed frame matches Matt Currie's official DMG reference image RGB hash `2ba8286c29ae381838c71a88614302ce05f2b26102d1ed8dc51e25f83fcccc67`. Use this as the main PPU visual regression before broad commercial ROM testing. |
-| PPU external gate | Pass | `.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_ppu.py --strict --max-steps 3000000` | Strict baseline passes required `dmg-acid2`, all current Mooneye acceptance/ppu ROMs: `stat_irq_blocking`, `stat_lyc_onoff`, `vblank_stat_intr-GS`, `hblank_ly_scx_timing-GS`, `intr_1_2_timing-GS`, `intr_2_0_timing`, `intr_2_mode0_timing`, `intr_2_mode0_timing_sprites`, `intr_2_mode3_timing`, `intr_2_oam_ok_timing`, `lcdon_timing-GS`, and `lcdon_write_timing-GS`, plus selected Mealybug mode-3 image cases: `m3_lcdc_tile_sel_change`, `m3_lcdc_bg_map_change`, `m3_bgp_change`, `m3_window_timing`, `m3_window_timing_wx_0`, `m3_bgp_change_sprites`, `m3_scx_high_5_bits`, `m3_scx_low_3_bits`, `m3_scy_change`, `m3_scx_high_5_bits_change2`, `m3_scy_change2`, `m3_lcdc_win_map_change`, `m3_lcdc_win_map_change2`, `m3_lcdc_tile_sel_win_change`, `m3_lcdc_obj_en_change`, `m3_lcdc_obj_en_change_variant`, `m3_lcdc_obj_size_change`, `m3_lcdc_obj_size_change_scx`, `m3_obp0_change`, `m3_lcdc_bg_en_change`, `m3_wx_4_change`, `m3_wx_4_change_sprites`, `m3_wx_5_change`, `m3_wx_6_change`, `m3_lcdc_win_en_change_multiple`, and `m3_lcdc_win_en_change_multiple_wx`. Mooneye build: `mts-20240926-1737-443f6e1`. |
-| Mealybug Round 1 candidate lane | XFail tracked | `.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_ppu.py --skip-dmg-acid2 --skip-mooneye --include-mealybug-candidates --max-steps 3000000` | Adjacent LCDC/window/tile cases are runnable from the main PPU verifier but are not promoted into the strict gate until they pass. Current pixel diffs: `m3_lcdc_tile_sel_change2` 261 and `m3_lcdc_tile_sel_win_change2` 272. Both are tracked against CPU CGB C reference images because this local archive does not include DMG references for those two cases; upstream notes call out CGB-specific same-cycle `TILE_SEL` behavior, so keep them candidate-only until a DMG oracle or CGB PPU mode exists. |
-| Other PPU ROM suites | Pending | Not yet part of the automated gate | Broader FIFO/timing suites still need to be added after the current strict Mooneye and Mealybug gate. |
-| Commercial DMG games | Smoke only | `.\.tools\python-3.12.4-embed-amd64\python.exe -B main.py roms\DrMario.gb --frames 3`; user window run on 2026-05-20 | `DrMario.gb` boots and advances 3 headless frames; user-reported interactive window run showed no obvious visual glitches, with FPS still below target. Treat this as a smoke check, not a compatibility oracle. |
+| Unit test suite | Pass | `.\.tools\python-3.12.4-embed-amd64\python.exe -B -m unittest discover -v` | Latest run on 2026-05-22: 301 tests passed. Covers CPU, bus/timers, cartridge mappers, runtime, display/window profiling, joypad, PPU, APU/audio, and `dmg-acid2`. |
+| Blargg `cpu_instrs` individual ROMs `01` through `11` | Pass | `scripts\verify_cpu.py` | Current verifier passes all individual CPU instruction ROMs. |
+| Blargg combined `cpu_instrs.gb` | Pass | `scripts\verify_cpu.py` and direct `main.py --stop-on-serial-result` runs | Current run reaches the serial `Passed` result. |
+| `dmg-acid2` | Pass | Unit test and `scripts\verify_ppu.py --strict` | First completed frame matches Matt Currie's official DMG reference hash `2ba8286c29ae381838c71a88614302ce05f2b26102d1ed8dc51e25f83fcccc67`. |
+| PPU external strict gate | Pass | `.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_ppu.py --strict --max-steps 3000000` | Latest run on 2026-05-22 passed `dmg-acid2`, current Mooneye acceptance/ppu ROMs, and selected Mealybug mode-3 image cases. |
+| Mealybug candidate lane | XFail tracked | `scripts\verify_ppu.py --skip-dmg-acid2 --skip-mooneye --include-mealybug-candidates --max-steps 3000000` | Adjacent FIFO/tile-selection cases remain diagnostic only until a DMG oracle or a CGB PPU path is available for the reference-image ambiguity. |
+| Pokemon Red real-ROM gate | Pass | `scripts\verify_pokemon_red.py`; live profiling command in README | Current MBC3 mapper, save-RAM, 600-frame smoke, live audio, and heavy-window frame pacing are repeatable enough to use as the primary real-ROM regression target. |
+| Pokemon Red 600-frame WAV identity | Pass | Headless `--dump-audio` vs live `--capture-live-audio` | Latest PCM payloads and WAV params are identical. SHA-256 of PCM: `6575f192cdea8ed0bf84c1ee775add94035c7e556a36c2a094a1dbb2f052b10b`. |
+| Dr. Mario | Playable smoke | User window run; visual smoke command in README | Interactive run has no obvious visual glitches. Keep as smoke coverage until a scripted regression is added. |
+| Other commercial DMG games | Pending | Not yet part of the gate | Add titles one at a time with ROM-specific smoke criteria, save behavior, profiling windows, and audio checks. |
+
+## Latest Pokemon Red Performance Evidence
+
+Command:
+
+```powershell
+python -B main.py .\roms\PRed.gb --window --audio --max-instructions 0 --frames 1800 --profile-window --profile-window-interval 60
+```
+
+Latest relevant profile windows:
+
+| Window | Evidence | Interpretation |
+| --- | --- | --- |
+| Scene-transition spike | `wall_fps=50.87`, `spike_ms=69.68`, `spike_cause=bus-slow`, queue `275.6-365.7 ms` | Worst non-startup transition now clears the 50 fps target. |
+| Heavy gameplay/decompression window | `wall_fps=53.55`, `spike_ms=30.70`, queue `153.5-323.4 ms` | Former ~45 fps heavy window now clears target with healthy queue. |
+| Audio counters | `audio_underruns=0`, `audio_dropped=0`, `apu_dropped_samples=0` | No live audio underrun/drop regression in the profiled run. |
+
+Headless slices used during optimization:
+
+- 1080-1140 transition slice: about 66-67 fps after LCD-off copy/fill loop batching.
+- 1500-1560 heavy slice: about 58-59 fps after Pokemon Red hot-path batching.
 
 ## Subsystems
 
 | Area | Status | Current Coverage | Remaining Risk |
 | --- | --- | --- | --- |
-| CPU instruction behavior | Pass | All documented non-CB and CB opcodes, flags, stack/control flow, interrupts, HALT bug, STOP wake behavior, STOP divider/timer freeze behavior, and Blargg `cpu_instrs` coverage. | Exact ordering for obscure internal cycles should keep being checked as additional timing ROMs are added. |
-| Memory bus and timers | Partial | DIV/TIMA edge ticking, delayed TIMA reload, STOP/speed-switch divider reset and STOP timer freeze behavior, serial transfer timing, OAM DMA bus blocking, boot ROM overlay, IO read masks, and CGB-only DMG inert registers. | More hardware timing tests are needed for rare write-ordering and interrupt-boundary cases. |
-| PPU and framebuffer | Partial | LCD modes, `LY`/`STAT`, VBlank, line-153 wrap, DMG STAT write quirk, BG/window/OBJ rendering, palette handling, scroll wrapping, sprite priority, Mode-2-sampled latched `WY`, mode-3 penalties, segmented mid-line register effects including pre-trigger window-disable stall shortening, early window-enable pulse cancellation, window-enable reactivation with updated WX, background fetch-phase restart after window disable, window-restart palette timing, source-bit changes, BG/window enable output-mask timing around sprite fetches, tile-data high-byte fetch-boundary timing, aligned-sprite low-byte boundary splitting, initial window tile-data pulse targeting with aligned sprites, repeated early window tile-data pulse claiming, line-0 non-window tile-data source claiming for repeated very-early OBJ fetch pulses, after-start window tile-data byte splitting, WX=0 window restart timing, WX hidden-edge first-pixel glitch timing, WX=4/WX=5 hidden-edge reactivation zero-pixel timing, high-WX window fetch preservation across later WX writes, line-latched mode-2 sprite selection and sprite tile-data byte-level `OBJ_SIZE` sampling across mid-mode-3 writes, sprite-aware BGP timing including HBlank tail updates after already-emitted sprites and preserved left-edge OBJ fetch stalls after OBJ disable, selected mode-3 SCX/SCY scroll-raster fetch timing, LCD-on access-window timing, OAM DMA sprite hiding, `dmg-acid2` reference-image matching, and the selected strict external Mooneye/Mealybug PPU gate are covered. | The selected external PPU gate is strict-green. Full per-dot pixel FIFO, complete mid-scanline raster effects beyond the selected cases, and broader PPU ROM-suite coverage remain pending. |
-| Joypad/input | Partial | Active-low matrix reads, interrupt requests on selected high-to-low transitions, held-button non-retriggering, STOP wake, CLI held buttons, and Tkinter keyboard input. | Host input is basic and has not been validated against broad game menus or real-time gameplay. |
-| Cartridge mappers | Partial | ROM-only no-RAM behavior, ROM+RAM, MBC1, MBC1M, MBC2, MBC3 with 0-7 RAM-bank selection/64 KiB RAM and RTC, MBC5 including rumble bit behavior, HuC1 banking/IR state, save RAM helpers, and unsupported-mapper warnings are unit-tested. | Unsupported or unverified specialty hardware includes MMM01, MBC6, MBC7 sensor behavior, Pocket Camera, Bandai TAMA5, and HuC3. |
-| APU/audio | Partial | Register model, `NR52`, DAC-gated activity, trigger handling, wave RAM access including active-CH3 blocking, CH3 playback delay and first-sample fetch order, length counters including DIV-APU frame-step extra length clocking and `DIV` write falling-edge clocking, envelope trigger timing before envelope frame steps, CH1 sweep including negate-clear and shift-zero edge cases, pulse/wave/noise timers including CH4 clock-shift stop behavior, signed active-channel DAC output, `NR50`/`NR51` mixing, initial high-pass output filtering, sample buffering, and WAV dumps have unit coverage. | Live host audio, mature hardware-accurate analog filtering, and APU ROM-suite compatibility are pending. |
-| Runtime/display | Partial | Frame stepping, stop conditions, save lifecycle, reset preserving cartridge state, frame dumps, Tkinter window mode, keyboard controls, and runtime trace toggles. | Runtime pacing and UI are functional but not a substitute for hardware-level timing compatibility. |
+| CPU instruction behavior | Pass | Documented non-CB and CB opcodes, flags, stack/control flow, interrupts, HALT bug, STOP wake/freeze behavior, per-access cycle accounting, and Blargg `cpu_instrs`. | Rare internal-cycle ordering should keep being checked as additional timing ROMs are added. |
+| Memory bus and timers | Partial | DIV/TIMA edge ticking, delayed TIMA reload, STOP timer freeze, serial transfer timing, OAM DMA bus blocking and line visibility, boot ROM overlay, IO read masks, and CGB-only DMG inert registers. | More hardware timing tests are needed for uncommon write-ordering and interrupt-boundary cases. |
+| PPU and framebuffer | Partial | LCD modes, `LY`/`STAT`, VBlank, line-153 wrap, DMG STAT quirk, BG/window/OBJ rendering, palette handling, scroll wrapping, sprite priority, mode-3 penalties, selected segmented mid-line effects, OAM DMA sprite hiding, `dmg-acid2`, Mooneye acceptance/ppu, and selected Mealybug image cases. | Full per-dot FIFO behavior, every mid-scanline raster edge, and broader PPU ROM suites remain pending. |
+| Joypad/input | Partial | Active-low matrix reads, selected high-to-low interrupts, held-button non-retriggering, STOP wake, CLI held buttons, and Tkinter keyboard input. | Host input has been exercised in real gameplay, but not yet as a broad automated game-menu/input regression suite. |
+| Cartridge mappers | Partial | ROM-only, ROM+RAM, MBC1, MBC1M, MBC2, MBC3 with RTC/save sidecar, MBC5 with rumble-control behavior, HuC1 banking/IR state, save RAM helpers, and unsupported-mapper warnings. | Unsupported or unverified specialty hardware includes MMM01, MBC6, MBC7 sensor behavior, Pocket Camera, Bandai TAMA5, and HuC3. |
+| APU/audio | Partial | Register model, `NR52`, DAC-gated activity, trigger handling, CH3 wave RAM behavior/playback delay, length counters, envelopes, CH1 sweep, pulse/wave/noise timers, mixer, high-pass filter, bounded sample buffering, WAV dumps, live Windows audio, and deterministic live/headless PCM identity. | Mature analog filtering, sweep/envelope obscure hardware quirks beyond current unit coverage, and APU ROM-suite compatibility remain pending. |
+| Runtime/display | Partial | Frame stepping, stop conditions, save lifecycle, reset preserving cartridge state, frame dumps, Tkinter window mode, keyboard controls, live audio, trace toggle, frame pacing, and rolling spike profiling. | Tkinter pacing is good enough for current Pokemon Red testing but remains host/runtime dependent. |
+| Performance | Partial | Pokemon Red heavy windows are optimized with guarded hot paths and verified with instruction/cycle/audio identity checks for the covered runs. | Broader ROMs may expose different hot paths; optimizations should remain guarded and verifier-backed. |
 
 ## Supported Cartridge Type Profiles
 
@@ -46,9 +67,6 @@ the emulator has no current compatibility claim for that target.
 
 ## Current Completion Estimate
 
-As of this matrix, the project is roughly 60% of the way from CPU milestone
-to a practical DMG emulator, and much less than that if measured against
-cycle-perfect hardware compatibility. The CPU and common mapper base are strong;
-the current selected external PPU gate is strict-green, and the main remaining
-work is expanding FIFO/timing coverage beyond that gate, broader ROM-suite
-compatibility tracking, and audio output/filtering accuracy.
+The project has moved past the first "does a real ROM work?" threshold. CPU correctness, common cartridge support, selected PPU compatibility, live display/audio, and Pokemon Red gameplay are now solid enough for iterative real-ROM testing.
+
+It is still not a broad or cycle-perfect DMG compatibility claim. The main remaining work is expanding ROM-suite coverage, hardening audio accuracy, adding more commercial-game gates, and replacing targeted PPU/performance assumptions with broader hardware-test evidence.

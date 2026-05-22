@@ -1,67 +1,183 @@
 # GBemu Next Stages
 
-Stage 1 CPU status: complete and verified. Preserve `scripts/verify_cpu.py` as a regression gate before and after later emulator work.
+Date: 2026-05-22
 
-Stage 2 status: started. The emulator now has minimal PPU timing, `LY`/`STAT` updates, line-153 `LY` wrap timing, DMG STAT write quirk handling, STAT mode-source interrupts for HBlank/VBlank/OAM, VBlank interrupt request, LCD enable/disable handling with framebuffer and direct scanline blanking, LCD-on VRAM/OAM access-window timing, SCX/window/OBJ mode-3 timing penalties including the WX=0 window restart edge, SCX low-bit latching at mode-3 start, initial segmented mode-3 raster handling for palette and same-enable `LCDC` writes plus scroll writes delayed to background fetch boundaries with sprite/window stall-aware write positioning and selected SCY tile-map/tile-data-byte fetch sampling, segmented emitted-pixel timing that preserves earlier stalls after later register writes, window-restart palette write clamping, segmented window-stall timing that removes not-yet-incurred window penalties after mid-line disable before the trigger point, mid-line `LCDC` source and OBJ enable/disable timing adjustments for later fetch penalties including preserved already-incurred left-edge OBJ fetch stalls, high tile-data byte fetch-boundary handling, aligned-sprite low-byte boundary splitting, initial window tile-data pulse targeting with aligned sprites, repeated early window tile-data pulse claiming, line-0 non-window tile-data source claiming for repeated very-early OBJ fetch pulses, and after-start window tile-data byte splitting, BGP timing behavior including sprite-aware palette write clamping and HBlank tail updates after already-emitted sprites, mid-line OAM DMA sprite hiding and OBJ timing resync from the first affected pixel, mode-3 `WX` writes and window-enable changes before and after the window trigger point including hidden, missed-trigger, and high-WX fetch-start cases, line-start render-state snapshots for window context, PPU-mode CPU access restrictions for VRAM/OAM, background/window framebuffer rendering including 256x256 scroll wrapping, LCDC background/window and OBJ enable gating, Mode-2-sampled latched window `WY` trigger and `WX=167` hidden behavior, line-latched mode-2 sprite selection and sprite tile-data byte-level `OBJ_SIZE` sampling across mid-mode-3 writes, DMG sprite rendering including the 10-sprites-per-scanline cap, 8x16 tile selection, X/Y flip, OBP0/OBP1 selection, BG-over-OBJ priority masking, line-latched OAM DMA sprite hiding without OBJ fetch stall timing, a ROM-driven CPU/bus/PPU framebuffer integration test, a `dmg-acid2` visual regression matching the official DMG reference image, a strict selected external PPU gate in `scripts\verify_ppu.py`, and an optional Tkinter display window.
+This document is the active roadmap. Historical Stage 1 CPU evidence is preserved in `docs\stage1-audit.md`; current compatibility evidence is in `docs\compatibility.md`.
 
-Timing status: started. The bus now models DIV/TIMA from an internal system counter, handles TIMA ticks caused by DIV reset and TAC falling-edge writes, resets/freezes the divider and timer while STOP holds, delays overflow reload/interrupt requests, advances OAM DMA one byte per machine cycle with DMG HRAM-only CPU-visible access during active transfers, advances PPU dots inside the per-cycle timer/DMA loop so mode-boundary crossings are visible to OAM DMA line latches on both sides of each dot transition, returns hardware-style read masks and ignores writes for key MMIO/APU holes plus documented and common-undocumented CGB-only registers on DMG, handles 4096-cycle internal-clock serial transfers with disconnected-link receive data and interrupt requests, and wakes STOP on enabled pending interrupts or selected joypad lines. The CPU now advances the bus during opcode/immediate fetches, memory read/write helper cycles, common control-flow/16-bit internal cycles, and interrupt-entry idle cycles, which lets pending TIMA reloads mature before later instruction writes, stack writes, and stack reads; decoded instruction paths now assert that all declared cycles are explicitly accounted for instead of silently padding at instruction end. Exact hardware ordering for less-visible internal operations still needs more hardware-test coverage.
+## Current State
 
-## Stage 2: Display Timing And Minimal PPU
+GBemu is now a playable DMG emulator for the current primary real-ROM target, Pokemon Red. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, and rolling frame/audio profiling.
 
-Goal: produce a visible framebuffer from simple DMG ROMs without adding audio or broad cartridge support.
+The project is not cycle-perfect and not yet a broad commercial compatibility emulator. The strongest next work is to keep adding evidence while improving accuracy and tail-latency behavior.
 
-Work items:
+## Completed Milestones
 
-- Add a `PPU` module clocked from CPU cycles. Done.
-- Implement LCD modes 2, 3, 0, and 1 timing well enough to update `LY`, `STAT`, and VBlank interrupt state. Initial timing implementation plus SCX/window/OBJ mode-3 penalties, line-start render-state snapshots, segmented palette/same-enable `LCDC` writes with OBJ fetch timing resync, window-restart palette write clamping including WX=0, segmented mode-3 penalty accounting across register writes, segmented window-stall adjustment for pre-trigger mid-line disables, scroll writes delayed to background fetch boundaries, selected SCX/SCY mode-3 fetch sampling, and mode-3 `WX`/window-enable writes before and after the window trigger point are done, including hidden and missed-trigger cases; mid-scanline write positioning now accounts for sprite/window stalls, while deeper per-dot FIFO timing remains pending.
-- Model the VBlank line-153 `LY` wrap to 0 and associated LYC comparison. Done.
-- Implement the monochrome DMG spurious STAT interrupt on writes during OAM scan, HBlank, VBlank, or LY=LYC. Done.
-- Suppress STAT interrupt requests and scanline rendering while LCD/PPU is disabled. Done.
-- Render DMG background tiles from VRAM into a 160x144 framebuffer. Initial background-only implementation done.
-- Add palette register handling for `BGP`, `OBP0`, and `OBP1`. Initial DMG palette mapping is done for BG/window and sprites, including selected mode-3 BGP timing with OBJ fetch stalls.
-- Add a minimal viewer or frame-dump path after the framebuffer exists. ASCII PPM frame dump is done via `main.py --dump-frame`; interactive Tkinter window mode is available via `main.py --window`.
-- Add focused tests for mode timing, `LY` progression, VBlank interrupt request, STAT mode-source interrupts, tile decode, background/window rendering, scroll wrapping, LCDC layer enable gates, tile-map/tile-data selection, Mode-2-sampled latched window `WY` trigger and `WX` hidden edge cases, line-start render-state latching, segmented mode-3 palette and `LCDC` writes, mid-line source/OBJ enable/disable timing changes, tile-data source high-byte fetch-boundary timing, aligned-sprite low-byte boundary splitting, initial window tile-data pulse targeting with aligned sprites, repeated early window tile-data pulse claiming, line-0 non-window repeated tile-data pulse claiming, after-start window tile-data byte splitting, prior-stall preservation across later register writes and OBJ-disable writes after left-edge sprite fetches, line-latched mode-2 sprite selection and byte-level sprite tile-data `OBJ_SIZE` sampling across mid-mode-3 writes, HBlank BGP tail updates after already-emitted sprites, pre-trigger window-disable mode-3 shortening, scroll writes at background fetch boundaries, mode-3 `WX` and window-enable writes before and after the trigger point, hidden-edge `WX` first-pixel glitch behavior, hidden, missed-trigger, and high-WX fetch-start window writes, sprite-stall-aware raster write positioning, sprite scanline selection limits, 8x16 sprite tile selection, sprite flips, palette selection, BG-over-OBJ priority masking, line-latched OAM DMA sprite hiding, mid-line OAM DMA sprite hiding and mode-3 timing shortening, DMA-hidden sprite mode-3 timing, DMA crossing from HBlank into next-line OAM, final-cycle DMA at that boundary, and `dmg-acid2` official-reference visual output. Initial direct PPU tests, a ROM-level CPU/bus/PPU framebuffer integration test, the `dmg-acid2` regression gate, Mooneye `LD B,B` protocol handling, and the selected Mealybug image-comparison cases including the adjacent SCX/SCY scroll variants are done.
-- Restrict CPU access to VRAM during mode 3 and OAM during modes 2/3. Done.
-- Hide sprites on lines rendered while OAM DMA is active. Initial conservative DMG behavior is done for active render-time DMA and for visible lines that observed DMA during OAM/drawing even if the transfer finishes before line render; mid-line DMA now preserves pixels emitted before the transfer was observed while hiding later sprites, and DMA-hidden sprites no longer add OBJ fetch stall timing to the affected line segment.
-- Next: add deeper per-dot pixel-FIFO refinements, finer mid-scanline raster effect behavior beyond the current segmented write model, and more complete compatibility checks.
+### Stage 1: CPU, Bus, And Test Harness
 
-Suggested next test targets:
+Status: complete and preserved as a regression gate.
 
-- Keep `dmg-acid2` and `scripts\verify_ppu.py --strict` as the PPU gates before broad commercial ROM testing.
-- Keep the current Mooneye acceptance/ppu directory strict-green as timing changes land.
-- Expand Mealybug and other FIFO/raster timing coverage beyond the current strict selected image cases. Round 1 promoted `m3_lcdc_win_map_change`, `m3_lcdc_win_map_change2`, `m3_lcdc_tile_sel_win_change`, `m3_lcdc_obj_en_change`, `m3_lcdc_obj_en_change_variant`, `m3_lcdc_obj_size_change`, `m3_lcdc_obj_size_change_scx`, `m3_obp0_change`, `m3_scx_low_3_bits`, `m3_wx_4_change`, `m3_wx_4_change_sprites`, `m3_wx_5_change`, and `m3_wx_6_change` into the strict gate. `scripts\verify_ppu.py --include-mealybug-candidates` still tracks the remaining adjacent cases without making them part of the strict gate yet: `m3_lcdc_tile_sel_change2`, `m3_lcdc_tile_sel_win_change2`, `m3_lcdc_bg_en_change`, `m3_lcdc_win_en_change_multiple`, and `m3_lcdc_win_en_change_multiple_wx`.
-- Next PPU timing target: close the remaining `change2` LCDC/tile-selection FIFO gaps and finish the smaller sprite/window-adjacent residuals. The current model handles the first-generation window map and tile-data source pulses, including byte-mixed window tile-data fetches; the newer multi-toggle `change2` ROMs are closer after high-byte boundary, aligned-sprite low-byte boundary, initial window pulse retargeting, repeated early window pulse claiming, and after-start window byte-split timing, but still expose residual repeated-pulse and aligned-sprite timing behavior. The two tile-selection `change2` cases currently use CPU CGB C reference images because no DMG expected images are present locally, and upstream documents CGB-specific same-cycle `TILE_SEL` behavior for those tests; keep treating them as candidate diagnostics, not strict DMG promotion targets, until a DMG reference image or CGB PPU path is available. `m3_scx_low_3_bits` is strict-green after modeling the first background fetch SCX-low latch boundary at `MODE2_DOTS + 8`; the OBJ-size pair is strict-green after byte-level sprite tile-data `OBJ_SIZE` sampling and left-clipped in-flight sprite fetch preservation; the OBJ-enable variant is strict-green after preserving only the incurred alignment portion of an exact-boundary OBJ fetch and the fully off-left forced OBJ phase; `m3_wx_6_change` is strict-green after high-WX fetch-start preservation and the `WX=6` to hidden-edge missed-trigger case; `m3_wx_4_change` and `m3_wx_5_change` are strict-green after preserving the started hidden-edge window and its zero-pixel reactivation phase shift.
+Done:
 
-## Stage 3: Input And Main Loop
+- ROM loading, cartridge header parsing, optional boot ROM mapping, and one-way `FF50` unmapping.
+- Full documented SM83 opcode coverage for non-CB and CB-prefixed instructions.
+- Stack/control flow, interrupts, HALT bug, STOP wake behavior, STOP divider/timer freeze behavior, and serial output for Blargg-style tests.
+- Cycle-aware bus integration for opcode/immediate fetches, memory reads/writes, internal cycles, stack operations, interrupts, timers, serial, and OAM DMA.
+- `scripts\verify_cpu.py` for repeatable CPU verification.
 
-Goal: make the emulator controllable and run continuously at roughly DMG speed.
+### Stage 2: PPU And Framebuffer
 
-Work items:
+Status: strong selected-gate coverage, not complete FIFO hardware emulation.
 
-- Implement joypad register `FF00` with directional/action button matrix behavior. Initial active-low matrix, high-to-low interrupt requests, held-button non-retrigger behavior, host button-name validation, and STOP wake through selected joypad lines are done.
-- Add a host event loop around CPU, bus, PPU, and input. Tkinter window mode now drives frames with keyboard input plus pause, reset, and quit controls; CLI can also stop after completed PPU frames, including immediate zero-frame targets without executing a CPU step, and hold a validated static set of buttons.
-- Add reusable runtime orchestration. `Emulator` now owns cartridge, bus, CPU, PPU, static buttons, frame stepping with a pre-step stop-condition guard, non-negative instruction/frame run-limit validation, optional one-way `FF50` boot ROM unmapping, reset with preserved cartridge RAM/RTC state, and save-RAM byte helpers.
-- Add frame pacing. Initial Tkinter pacing is done.
-- Add pause/reset/trace toggles outside the CPU core. Pause, reset, and trace toggles are done for the Tkinter display loop, and `--trace`/`--trace-file` can seed the initial window trace state.
+Done:
 
-## Stage 4: Cartridge Hardware
+- LCD modes, `LY`/`STAT`, VBlank, line-153 wrap, DMG STAT write quirk, and LCD enable/disable behavior.
+- DMG background, window, and sprite rendering with palette mapping, scroll wrapping, sprite priority, 8x16 selection, flips, OBP selection, and 10-sprites-per-line selection.
+- PPU-mode CPU access restrictions for VRAM/OAM.
+- OAM DMA bus blocking and line/sprite visibility effects.
+- Selected mode-3 timing model for SCX, SCY, WX, window enable/disable, LCDC source changes, OBJ enable/disable, OBJ size changes, palette writes, sprite/window stalls, and tile-data fetch-boundary cases.
+- Frame dumps through PPM/BMP and live Tkinter display output.
+- `dmg-acid2` reference-image regression and strict selected external PPU gate through `scripts\verify_ppu.py --strict`.
 
-Goal: support common DMG ROMs beyond CPU test ROMs.
+Remaining:
 
-Work items:
+- Full per-dot FIFO behavior.
+- Broader raster-effect edge cases outside the selected strict gate.
+- Additional PPU ROM suites beyond current Mooneye/Mealybug coverage.
 
-- Complete MBC1 ROM and RAM banking. Initial ROM banking, MBC1M multi-cart detection/banking, raw lower ROM bank register behavior, advanced-mode lower ROM area banking, large-ROM fixed RAM-bank wiring, RAM enable/disable, RAM bank mode, and RAM byte dump/load helpers are done. ROM-only no-RAM behavior, plain ROM+RAM external RAM access, and full RAM dump/load coverage are also done.
-- Add MBC2, MBC3, MBC5, and HuC1 basics. MBC2 ROM banking plus internal 512x4-bit RAM are done. Initial MBC3/MBC5 ROM/RAM banking is done for both; MBC3 0-7 RAM-bank selection including 64 KiB RAM and smaller-RAM bank wrapping, RTC latch/timekeeping, halt, day carry, sidecar save/load behavior, and invalid RTC selector handling are done. MBC5 rumble cartridges now keep bit 3 as rumble state while using only bits 0-2 for RAM bank selection. HuC1 ROM/RAM banking and basic IR mode state are done.
-- Add cartridge RAM persistence behind an explicit save path. Byte dump/load helpers, MBC3 `.sav.rtc` sidecar persistence, and CLI `--save-file` load/save lifecycle are done.
-- Add header-driven cartridge dispatch instead of all cartridge behavior living in one class. Header-driven mapper capability profiles, CLI unsupported-mapper warnings, and mapper dispatch classes for ROM, MBC1, MBC2, MBC3, MBC5, HuC1, and unsupported cartridges are done.
+### Stage 3: Runtime, Input, Display, And Pacing
 
-## Stage 5: Audio And Compatibility
+Status: usable for real gameplay.
 
-Goal: move from test-ROM correctness toward playable commercial ROM behavior.
+Done:
 
-Work items:
+- `Emulator` orchestration for cartridge, bus, CPU, PPU, APU, buttons, frame stepping, reset, and save state lifecycle.
+- CLI frame/instruction limits, stop conditions, static held buttons, frame/audio dumps, and trace output.
+- Joypad `FF00` matrix, selected-line interrupts, held-button non-retriggering, and STOP wake.
+- Tkinter window mode with keyboard input, pause/reset/trace/audio toggles, frame pacing, and live audio.
+- Rolling window profiler with run/draw/audio timing, CPU/bus/PPU/APU stats, audio queue range, worst-frame spike fields, and coarse spike cause attribution.
+- Pokemon Red frame pacing round 1: worst non-startup live windows now clear 50 fps with zero audio underruns/drops in the latest profile.
 
-- Implement APU channels incrementally. Initial register model, `NR52` power control, DAC-gated channel active flags, trigger handling, wave RAM access including active-CH3 blocking, CH3 playback delay and first-sample fetch order, length counters including DIV-APU frame-step extra length clocking and `DIV` write falling-edge clocking, volume envelopes including trigger timing before envelope frame steps, CH1 frequency sweep including negate-clear and shift-zero edge cases, pulse/wave/noise frequency timers including CH4 clock-shift stop behavior, raw channel samples, signed active-channel DAC output, `NR50`/`NR51` mixing, initial high-pass output filtering, bounded sample-rate buffering, and headless WAV dumps with parent directory creation are done; mature hardware-accurate filtering and live host audio output remain pending.
-- Add more hardware test ROM suites.
-- Continue refining per-instruction timer/write timing, finer PPU-side OAM DMA glitches, pixel FIFO timing, and additional CPU/PPU edge cases as tests demand them.
-- Add compatibility notes per ROM/test suite. Initial compatibility matrix is in `docs\compatibility.md`; keep expanding it as new ROM suites and game titles become part of the regression gate.
+Remaining:
+
+- Add automated capture for window-profile summaries so performance gates can run without manual log inspection.
+- Add more scripted input/playback scenarios for menus and gameplay.
+- Consider optional alternate frontends later if Tkinter becomes the limiting factor.
+
+### Stage 4: Cartridge Hardware
+
+Status: common mapper base is solid.
+
+Done:
+
+- ROM-only and ROM+RAM.
+- MBC1, including RAM enable/disable, RAM banking mode, large-ROM fixed-bank behavior, advanced-mode lower ROM area banking, and MBC1M detection/banking.
+- MBC2 ROM banking and internal 512x4-bit RAM.
+- MBC3 ROM/RAM banking, 0-7 RAM bank selection, 64 KiB RAM support, smaller-RAM wrapping, RTC latch/timekeeping/halt/day carry behavior, and `.sav.rtc` sidecar persistence.
+- MBC5 ROM/RAM banking and rumble-control bit behavior.
+- HuC1 ROM/RAM banking and basic IR state.
+- Header-driven mapper dispatch and unsupported cartridge warnings.
+
+Remaining:
+
+- Specialty mappers/hardware: MMM01, MBC6, MBC7 sensor behavior, Pocket Camera, Bandai TAMA5, HuC3.
+- More commercial ROM mapper/save regression cases.
+
+### Stage 5: APU And Audio
+
+Status: functional audio exists and is regression-tested for determinism; analog accuracy is still early.
+
+Done:
+
+- `NR52` power control, register model, DAC-gated activity, trigger handling, length counters, envelopes, CH1 sweep, pulse/wave/noise timers, CH3 wave RAM access behavior, CH3 playback delay, CH4 clock-shift stop behavior, raw channel samples, signed DAC output, `NR50`/`NR51` mixing, initial high-pass filtering, bounded sample buffering, and WAV writing.
+- Live Windows audio output through waveOut.
+- Live audio capture via `--capture-live-audio`.
+- Pokemon Red 600-frame headless/live WAV identity verified byte-for-byte.
+- Default live audio queue tuned for gameplay stability rather than minimum latency.
+
+Remaining:
+
+- Hardware-accurate analog filtering.
+- APU ROM-suite compatibility.
+- More edge-case coverage for obscure sweep/envelope/trigger interactions.
+- Latency tuning options after stability remains proven.
+
+## Active Regression Gates
+
+Run these before treating a compatibility or timing change as safe:
+
+```powershell
+.\.tools\python-3.12.4-embed-amd64\python.exe -B -m unittest discover -v
+.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_ppu.py --strict --max-steps 3000000
+.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_pokemon_red.py
+```
+
+For audio-sensitive changes, also compare a fixed headless/live WAV capture:
+
+```powershell
+.\.tools\python-3.12.4-embed-amd64\python.exe -B main.py .\roms\PRed.gb --max-instructions 0 --frames 600 --dump-audio qa-output\pred-headless-600.wav
+python -B main.py .\roms\PRed.gb --window --audio --max-instructions 0 --frames 600 --capture-live-audio qa-output\pred-live-600.wav
+```
+
+For performance-sensitive changes, profile Pokemon Red:
+
+```powershell
+python -B main.py .\roms\PRed.gb --window --audio --max-instructions 0 --frames 1800 --profile-window --profile-window-interval 60
+```
+
+Current target thresholds:
+
+- Steady gameplay: mostly near 60 fps.
+- Worst non-startup 60-frame windows: 50+ fps.
+- Audio counters: `audio_underruns=0`, `audio_dropped=0`, `apu_dropped_samples=0`.
+- Audio queue during known heavy windows: should stay comfortably above the danger zone, ideally above 80-100 ms.
+
+## Recommended Next Goals
+
+### 1. Make Pokemon Red A First-Class Automated Performance Gate
+
+The profiler already emits the right information. The next step is a script that runs a fixed Pokemon Red window/profile scenario, parses the output, and fails if:
+
+- Any non-startup 60-frame window drops below the chosen FPS target.
+- Audio queue dips below the configured threshold.
+- Any audio underrun/drop counter increments.
+- Instruction/cycle/frame totals unexpectedly drift for fixed headless slices.
+
+This would turn the current manual performance evidence into a repeatable CI-style gate.
+
+### 2. Add APU ROM-Suite Coverage
+
+Audio is now audible and deterministic enough to test more seriously. The next accuracy work should add APU-specific ROM suites and compare serial pass/fail output or reference PCM where practical.
+
+Suggested focus:
+
+- Sweep/envelope trigger edge cases.
+- CH3 wave RAM/playback quirks.
+- Length counter edge cases around DIV-APU falling edges.
+- Mixer/filter behavior after a stable digital baseline exists.
+
+### 3. Expand Commercial ROM Coverage
+
+Pokemon Red is the current primary target. Add one new title at a time and define objective checks for each:
+
+- Boot/title screen frames.
+- Save-RAM behavior if applicable.
+- Known menu/input path.
+- 600-1800 frame performance sample.
+- Optional WAV identity sample if audio is relevant.
+
+Dr. Mario is the next obvious candidate because it already has user-reported visual smoke success.
+
+### 4. Continue PPU FIFO/Raster Work
+
+The selected PPU gate is green, but full hardware compatibility needs broader FIFO behavior. Keep the strict gate stable while using candidate Mealybug cases and additional suites to drive targeted improvements.
+
+Do not promote candidate image tests into the strict gate until the expected image source is appropriate for DMG mode or a CGB path exists.
+
+### 5. Keep Optimizations Guarded And Verified
+
+The current Pokemon Red speedups are guarded by exact ROM byte patterns, LCD state, cycle safety, and direct-memory checks. Keep that standard:
+
+- Exact-match the code path being batched.
+- Preserve instruction and cycle totals.
+- Fall back to normal interpretation for uncommon branches.
+- Verify against tests, strict PPU, fixed headless slices, live profile, and WAV identity when audio output is active.
