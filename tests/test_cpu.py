@@ -395,6 +395,139 @@ class CPUTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_instructions"):
             cpu.run(max_instructions=-1)
 
+    def test_run_fast_forwards_contiguous_nops_without_step_callbacks(self) -> None:
+        cpu, _ = make_cpu(bytes([0x00] * 8 + [0x3E, 0x42]))
+
+        with patch.object(cpu, "step", wraps=cpu.step) as step_mock:
+            cpu.run(max_instructions=8)
+
+        step_mock.assert_not_called()
+        self.assertEqual(cpu.pc, 0x0108)
+        self.assertEqual(cpu.instructions, 8)
+        self.assertEqual(cpu.cycles, 32)
+
+    def test_run_keeps_per_instruction_nops_when_after_step_is_used(self) -> None:
+        cpu, _ = make_cpu(bytes([0x00] * 3))
+        callbacks: list[int] = []
+
+        cpu.run(max_instructions=3, after_step=lambda: callbacks.append(cpu.pc))
+
+        self.assertEqual(callbacks, [0x0101, 0x0102, 0x0103])
+        self.assertEqual(cpu.instructions, 3)
+        self.assertEqual(cpu.cycles, 12)
+
+    def test_run_fast_forwards_dec_de_delay_loop(self) -> None:
+        cpu, bus = make_cpu(bytes([0x11, 0x03, 0x00, 0x1B, 0x7A, 0xB3, 0x20, 0xFB]))
+        cpu.step()
+
+        with (
+            patch.object(bus, "cycles_until_next_interrupt_event", return_value=4096),
+            patch.object(cpu, "step", wraps=cpu.step) as step_mock,
+        ):
+            cpu.run(max_instructions=12)
+
+        step_mock.assert_not_called()
+        self.assertEqual(cpu.de, 0)
+        self.assertEqual(cpu.a, 0)
+        self.assertEqual(cpu.f & (FLAG_Z | FLAG_N | FLAG_H | FLAG_C), FLAG_Z)
+        self.assertEqual(cpu.pc, 0x0108)
+        self.assertEqual(cpu.instructions, 13)
+        self.assertEqual(cpu.cycles, 92)
+
+    def test_run_fast_forwards_partial_dec_bc_delay_loop_at_instruction_limit(self) -> None:
+        cpu, _ = make_cpu(bytes([0x0B, 0x78, 0xB1, 0x20, 0xFB]))
+        cpu.bc = 3
+
+        with patch.object(cpu, "step", wraps=cpu.step) as step_mock:
+            cpu.run(max_instructions=4)
+
+        step_mock.assert_not_called()
+        self.assertEqual(cpu.bc, 2)
+        self.assertEqual(cpu.a, 2)
+        self.assertEqual(cpu.f & (FLAG_Z | FLAG_N | FLAG_H | FLAG_C), 0)
+        self.assertEqual(cpu.pc, 0x0100)
+        self.assertEqual(cpu.instructions, 4)
+        self.assertEqual(cpu.cycles, 28)
+
+    def test_run_fast_forwards_nop_padded_dec_de_delay_loop(self) -> None:
+        cpu, _ = make_cpu(bytes([0x00, 0x00, 0x00, 0x1B, 0x7A, 0xB3, 0x20, 0xF8]))
+        cpu.de = 2
+
+        with patch.object(cpu, "step", wraps=cpu.step) as step_mock:
+            cpu.run(max_instructions=14)
+
+        step_mock.assert_not_called()
+        self.assertEqual(cpu.de, 0)
+        self.assertEqual(cpu.a, 0)
+        self.assertEqual(cpu.f & (FLAG_Z | FLAG_N | FLAG_H | FLAG_C), FLAG_Z)
+        self.assertEqual(cpu.pc, 0x0108)
+        self.assertEqual(cpu.instructions, 14)
+        self.assertEqual(cpu.cycles, 76)
+
+    def test_run_fast_forwards_dec_a_delay_loop(self) -> None:
+        cpu, _ = make_cpu(bytes([0x3D, 0x20, 0xFD, 0xC9]))
+        cpu.a = 3
+        cpu.f = FLAG_C
+
+        with patch.object(cpu, "step", wraps=cpu.step) as step_mock:
+            cpu.run(max_instructions=6)
+
+        step_mock.assert_not_called()
+        self.assertEqual(cpu.a, 0)
+        self.assertEqual(cpu.f & (FLAG_Z | FLAG_N | FLAG_H | FLAG_C), FLAG_Z | FLAG_N | FLAG_C)
+        self.assertEqual(cpu.pc, 0x0103)
+        self.assertEqual(cpu.instructions, 6)
+        self.assertEqual(cpu.cycles, 44)
+
+    def test_run_fast_forwards_partial_dec_a_delay_loop_at_instruction_limit(self) -> None:
+        cpu, _ = make_cpu(bytes([0x3D, 0x20, 0xFD]))
+        cpu.a = 0x10
+        cpu.f = 0
+
+        with patch.object(cpu, "step", wraps=cpu.step) as step_mock:
+            cpu.run(max_instructions=2)
+
+        step_mock.assert_not_called()
+        self.assertEqual(cpu.a, 0x0F)
+        self.assertEqual(cpu.f & (FLAG_Z | FLAG_N | FLAG_H | FLAG_C), FLAG_N | FLAG_H)
+        self.assertEqual(cpu.pc, 0x0100)
+        self.assertEqual(cpu.instructions, 2)
+        self.assertEqual(cpu.cycles, 16)
+
+    def test_run_fast_forwards_ly_wait_until_equal_loop(self) -> None:
+        cpu, bus = make_cpu(bytes([0xF0, 0x44, 0xBD, 0x20, 0xFB]))
+        cpu.l = 11
+        bus.ppu._scanline = 10
+        bus.ppu.line_dots = 0
+        bus.io[0x44] = 10
+
+        with patch.object(cpu, "step", wraps=cpu.step) as step_mock:
+            cpu.run(max_instructions=51)
+
+        step_mock.assert_not_called()
+        self.assertEqual(cpu.a, 11)
+        self.assertEqual(cpu.f & (FLAG_Z | FLAG_N | FLAG_H | FLAG_C), FLAG_Z | FLAG_N)
+        self.assertEqual(cpu.pc, 0x0105)
+        self.assertEqual(cpu.instructions, 51)
+        self.assertEqual(cpu.cycles, 472)
+
+    def test_run_fast_forwards_ly_wait_while_equal_loop(self) -> None:
+        cpu, bus = make_cpu(bytes([0xF0, 0x44, 0xBC, 0x28, 0xFB]))
+        cpu.h = 10
+        bus.ppu._scanline = 10
+        bus.ppu.line_dots = 0
+        bus.io[0x44] = 10
+
+        with patch.object(cpu, "step", wraps=cpu.step) as step_mock:
+            cpu.run(max_instructions=51)
+
+        step_mock.assert_not_called()
+        self.assertEqual(cpu.a, 11)
+        self.assertEqual(cpu.f & (FLAG_Z | FLAG_N | FLAG_H | FLAG_C), FLAG_N)
+        self.assertEqual(cpu.pc, 0x0105)
+        self.assertEqual(cpu.instructions, 51)
+        self.assertEqual(cpu.cycles, 472)
+
     def test_run_bulk_halt_preserves_instruction_limit_cycles(self) -> None:
         cpu, _ = make_cpu(bytes([0x76, 0x00]))
 

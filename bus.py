@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from apu import APU
 from cartridge import Cartridge
@@ -55,6 +56,14 @@ DMG_POST_BOOT_REGISTERED_MARK_TILE = bytes(
 )
 
 
+@dataclass(frozen=True)
+class BusProfileStats:
+    slow_system_counter_cycles: int
+    oam_dma_cycles: int
+    oam_dma_starts: int
+    timer_overflows: int
+
+
 class Bus:
     def __init__(
         self,
@@ -83,6 +92,11 @@ class Bus:
         self._oam_dma_index = 0
         self._oam_dma_cycle_counter = 0
         self._stopped = False
+        self.profile_enabled = False
+        self._profile_slow_system_counter_cycles = 0
+        self._profile_oam_dma_cycles = 0
+        self._profile_oam_dma_starts = 0
+        self._profile_timer_overflows = 0
         if not self.boot_rom_enabled:
             self._initialize_io_defaults()
             self._initialize_vram_defaults()
@@ -91,6 +105,19 @@ class Bus:
         self.apu = APU(self)
         self.joypad = Joypad(self)
         self.ppu = PPU(self)
+
+    def consume_profile(self) -> BusProfileStats:
+        stats = BusProfileStats(
+            slow_system_counter_cycles=self._profile_slow_system_counter_cycles,
+            oam_dma_cycles=self._profile_oam_dma_cycles,
+            oam_dma_starts=self._profile_oam_dma_starts,
+            timer_overflows=self._profile_timer_overflows,
+        )
+        self._profile_slow_system_counter_cycles = 0
+        self._profile_oam_dma_cycles = 0
+        self._profile_oam_dma_starts = 0
+        self._profile_timer_overflows = 0
+        return stats
 
     @property
     def oam_dma_active(self) -> bool:
@@ -273,7 +300,13 @@ class Bus:
         self._tick_system_counter(cycles)
         if self._serial_transfer_cycles:
             self._tick_serial(cycles)
-        self.apu._tick(cycles)
+        apu = self.apu
+        if apu.output_enabled:
+            apu._pending_output_cycles += cycles
+            if apu._pending_output_cycles >= apu._cycles_until_subsample:
+                apu._process_pending_output_cycles(flush=False)
+        else:
+            apu._advance_core(cycles)
         if self._oam_dma_requested:
             self._begin_oam_dma()
 
@@ -352,29 +385,36 @@ class Bus:
         self.interrupt_flags = self.interrupt_flags | 0x08
 
     def _tick_system_counter(self, cycles: int) -> None:
+        io = self.io
         if (
             not self._tima_reload_delay
             and not self._oam_dma_active
             and not self._oam_dma_requested
         ):
-            tac = self.io[0x07]
+            tac = io[0x07]
+            system_counter = self._system_counter
             if not tac & 0x04:
-                self._system_counter = (self._system_counter + cycles) & 0xFFFF
-                self.io[0x04] = (self._system_counter >> 8) & 0xFF
+                system_counter = (system_counter + cycles) & 0xFFFF
+                self._system_counter = system_counter
+                io[0x04] = (system_counter >> 8) & 0xFF
                 self.ppu.tick(cycles)
                 return
 
             bit = (9, 3, 5, 7)[tac & 0x03]
             period = 1 << (bit + 1)
-            edge_count = (self._system_counter + cycles) // period - self._system_counter // period
-            if self.io[0x05] + edge_count <= 0xFF:
-                self._system_counter = (self._system_counter + cycles) & 0xFFFF
-                self.io[0x04] = (self._system_counter >> 8) & 0xFF
+            edge_count = (system_counter + cycles) // period - system_counter // period
+            tima = io[0x05]
+            if tima + edge_count <= 0xFF:
+                system_counter = (system_counter + cycles) & 0xFFFF
+                self._system_counter = system_counter
+                io[0x04] = (system_counter >> 8) & 0xFF
                 if edge_count:
-                    self.io[0x05] = (self.io[0x05] + edge_count) & 0xFF
+                    io[0x05] = (tima + edge_count) & 0xFF
                 self.ppu.tick(cycles)
                 return
 
+        if self.profile_enabled:
+            self._profile_slow_system_counter_cycles += cycles
         for _ in range(cycles):
             self._tick_tima_reload_delay()
             old_signal = self._timer_signal()
@@ -383,6 +423,8 @@ class Bus:
             if old_signal and not self._timer_signal():
                 self._increment_tima()
             oam_dma_active_at_cycle_start = self._oam_dma_active
+            if self.profile_enabled and oam_dma_active_at_cycle_start:
+                self._profile_oam_dma_cycles += 1
             if oam_dma_active_at_cycle_start:
                 self.ppu.on_oam_dma_active_cycle()
             self._tick_oam_dma()
@@ -425,6 +467,8 @@ class Bus:
 
     def _increment_tima(self) -> None:
         if self.io[0x05] == 0xFF:
+            if self.profile_enabled:
+                self._profile_timer_overflows += 1
             self.io[0x05] = 0x00
             self._tima_reload_delay = 4
         else:
@@ -441,6 +485,8 @@ class Bus:
     def _request_oam_dma(self, value: int) -> None:
         self._oam_dma_source = value << 8
         self._oam_dma_requested = True
+        if self.profile_enabled:
+            self._profile_oam_dma_starts += 1
 
     def _begin_oam_dma(self) -> None:
         self._oam_dma_requested = False

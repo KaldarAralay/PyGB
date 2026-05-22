@@ -90,6 +90,23 @@ class PPURenderState:
     window_y_triggered: bool
 
 
+@dataclass(frozen=True)
+class PPUProfileStats:
+    mode3_lines: int
+    rendered_lines: int
+    render_segments: int
+    sprite_lines: int
+    selected_sprites: int
+    max_sprites_per_line: int
+    obj_penalty_dots: int
+    window_penalty_dots: int
+    bg_fast_pixels: int
+    bg_slow_pixels: int
+    window_fast_pixels: int
+    window_slow_pixels: int
+    sprite_pixels: int
+
+
 class PPUBus(Protocol):
     vram: bytearray
     oam: bytearray
@@ -152,10 +169,55 @@ class PPU:
         self.window_line = 0
         self._window_y_triggered = False
         self._stat_line = False
+        self.profile_enabled = False
+        self._profile_mode3_lines = 0
+        self._profile_rendered_lines = 0
+        self._profile_render_segments = 0
+        self._profile_sprite_lines = 0
+        self._profile_selected_sprites = 0
+        self._profile_max_sprites_per_line = 0
+        self._profile_obj_penalty_dots = 0
+        self._profile_window_penalty_dots = 0
+        self._profile_bg_fast_pixels = 0
+        self._profile_bg_slow_pixels = 0
+        self._profile_window_fast_pixels = 0
+        self._profile_window_slow_pixels = 0
+        self._profile_sprite_pixels = 0
         self._set_ly(0)
         self._set_mode(MODE_OAM if self.lcd_enabled else MODE_HBLANK, request_interrupt=False)
         self._update_lyc_flag(request_interrupt=False)
         self._check_window_y_trigger()
+
+    def consume_profile(self) -> PPUProfileStats:
+        stats = PPUProfileStats(
+            mode3_lines=self._profile_mode3_lines,
+            rendered_lines=self._profile_rendered_lines,
+            render_segments=self._profile_render_segments,
+            sprite_lines=self._profile_sprite_lines,
+            selected_sprites=self._profile_selected_sprites,
+            max_sprites_per_line=self._profile_max_sprites_per_line,
+            obj_penalty_dots=self._profile_obj_penalty_dots,
+            window_penalty_dots=self._profile_window_penalty_dots,
+            bg_fast_pixels=self._profile_bg_fast_pixels,
+            bg_slow_pixels=self._profile_bg_slow_pixels,
+            window_fast_pixels=self._profile_window_fast_pixels,
+            window_slow_pixels=self._profile_window_slow_pixels,
+            sprite_pixels=self._profile_sprite_pixels,
+        )
+        self._profile_mode3_lines = 0
+        self._profile_rendered_lines = 0
+        self._profile_render_segments = 0
+        self._profile_sprite_lines = 0
+        self._profile_selected_sprites = 0
+        self._profile_max_sprites_per_line = 0
+        self._profile_obj_penalty_dots = 0
+        self._profile_window_penalty_dots = 0
+        self._profile_bg_fast_pixels = 0
+        self._profile_bg_slow_pixels = 0
+        self._profile_window_fast_pixels = 0
+        self._profile_window_slow_pixels = 0
+        self._profile_sprite_pixels = 0
+        return stats
 
     @property
     def lcd_enabled(self) -> bool:
@@ -175,26 +237,59 @@ class PPU:
             self._set_mode(MODE_HBLANK)
             return
 
+        line_dots = self.line_dots
+        next_dot = DOTS_PER_LINE
+        ly = self._scanline
+        if ly < VISIBLE_LINES:
+            if line_dots < MODE2_DOTS:
+                next_dot = MODE2_DOTS
+            elif (io[0x41] & 0x03) == MODE_DRAWING and line_dots < MODE2_DOTS + self._line_mode3_dots:
+                next_dot = MODE2_DOTS + self._line_mode3_dots
+            elif line_dots < DOTS_PER_LINE - 4:
+                next_dot = DOTS_PER_LINE - 4
+        elif ly == LINES_PER_FRAME - 1 and line_dots < 4:
+            next_dot = 4
+
+        if self._hblank_stat_interrupt_dot is not None:
+            if line_dots < self._hblank_stat_interrupt_dot:
+                if self._hblank_stat_interrupt_dot < next_dot:
+                    next_dot = self._hblank_stat_interrupt_dot
+            else:
+                next_dot = line_dots + 1
+
+        cycles_until_event = next_dot - line_dots
+        if cycles_until_event < 1:
+            cycles_until_event = 1
+        if cycles < cycles_until_event:
+            self.line_dots = line_dots + cycles
+            return
+
         while cycles > 0:
             next_dot = DOTS_PER_LINE
             ly = self._scanline
+            line_dots = self.line_dots
             if ly < VISIBLE_LINES:
-                if self.line_dots < MODE2_DOTS:
-                    next_dot = min(next_dot, MODE2_DOTS)
-                if (io[0x41] & 0x03) == MODE_DRAWING:
-                    next_dot = min(next_dot, MODE2_DOTS + self._line_mode3_dots)
-                if self.line_dots < DOTS_PER_LINE - 4:
-                    next_dot = min(next_dot, DOTS_PER_LINE - 4)
-            elif ly == LINES_PER_FRAME - 1 and self.line_dots < 4:
-                next_dot = min(next_dot, 4)
+                if line_dots < MODE2_DOTS:
+                    next_dot = MODE2_DOTS
+                elif (io[0x41] & 0x03) == MODE_DRAWING and line_dots < MODE2_DOTS + self._line_mode3_dots:
+                    next_dot = MODE2_DOTS + self._line_mode3_dots
+                elif line_dots < DOTS_PER_LINE - 4:
+                    next_dot = DOTS_PER_LINE - 4
+            elif ly == LINES_PER_FRAME - 1 and line_dots < 4:
+                next_dot = 4
 
             if self._hblank_stat_interrupt_dot is not None:
-                if self.line_dots >= self._hblank_stat_interrupt_dot:
+                if line_dots >= self._hblank_stat_interrupt_dot:
                     self._maybe_request_pending_hblank_stat_interrupt()
                 else:
-                    next_dot = min(next_dot, self._hblank_stat_interrupt_dot)
+                    if self._hblank_stat_interrupt_dot < next_dot:
+                        next_dot = self._hblank_stat_interrupt_dot
 
-            elapsed = min(cycles, max(1, next_dot - self.line_dots))
+            elapsed = next_dot - line_dots
+            if elapsed < 1:
+                elapsed = 1
+            if cycles < elapsed:
+                elapsed = cycles
             self.line_dots += elapsed
             cycles -= elapsed
 
@@ -227,24 +322,27 @@ class PPU:
         if not io[0x40] & LCDC_ENABLE:
             return DOTS_PER_LINE
 
+        line_dots = self.line_dots
         next_dot = DOTS_PER_LINE
         ly = self._scanline
         if ly < VISIBLE_LINES:
-            if self.line_dots < MODE2_DOTS:
-                next_dot = min(next_dot, MODE2_DOTS)
-            if (io[0x41] & 0x03) == MODE_DRAWING:
-                next_dot = min(next_dot, MODE2_DOTS + self._line_mode3_dots)
-            if self.line_dots < DOTS_PER_LINE - 4:
-                next_dot = min(next_dot, DOTS_PER_LINE - 4)
-        elif ly == LINES_PER_FRAME - 1 and self.line_dots < 4:
-            next_dot = min(next_dot, 4)
+            if line_dots < MODE2_DOTS:
+                next_dot = MODE2_DOTS
+            elif (io[0x41] & 0x03) == MODE_DRAWING and line_dots < MODE2_DOTS + self._line_mode3_dots:
+                next_dot = MODE2_DOTS + self._line_mode3_dots
+            elif line_dots < DOTS_PER_LINE - 4:
+                next_dot = DOTS_PER_LINE - 4
+        elif ly == LINES_PER_FRAME - 1 and line_dots < 4:
+            next_dot = 4
 
         if self._hblank_stat_interrupt_dot is not None:
-            if self.line_dots >= self._hblank_stat_interrupt_dot:
+            if line_dots >= self._hblank_stat_interrupt_dot:
                 return 1
-            next_dot = min(next_dot, self._hblank_stat_interrupt_dot)
+            if self._hblank_stat_interrupt_dot < next_dot:
+                next_dot = self._hblank_stat_interrupt_dot
 
-        return max(1, next_dot - self.line_dots)
+        cycles = next_dot - line_dots
+        return cycles if cycles > 0 else 1
 
     def on_oam_dma_active_cycle(self) -> None:
         if (
@@ -1589,6 +1687,8 @@ class PPU:
     def render_scanline(self, y: int, state: PPURenderState | None = None) -> None:
         if y >= SCREEN_HEIGHT:
             return
+        if self.profile_enabled:
+            self._profile_rendered_lines += 1
         state = state or self._capture_render_state()
         if not state.lcdc & LCDC_ENABLE:
             self.framebuffer[y] = [0 for _ in range(SCREEN_WIDTH)]
@@ -1777,6 +1877,8 @@ class PPU:
             )
             return
 
+        if self.profile_enabled:
+            self._profile_bg_slow_pixels += end_x - start_x
         for x in range(start_x, end_x):
             bg_x = (x + scx) & 0xFF
             bg_y = (y + state.scy) & 0xFF
@@ -1816,6 +1918,8 @@ class PPU:
             )
             return
 
+        if self.profile_enabled:
+            self._profile_window_slow_pixels += end_x - start_x
         for x in range(start_x, end_x):
             if x == reactivation_glitch_x:
                 color_id = 0
@@ -1851,6 +1955,8 @@ class PPU:
         map_base: int,
         scx: int,
     ) -> None:
+        if self.profile_enabled:
+            self._profile_bg_fast_pixels += end_x - start_x
         bg_y = (y + state.scy) & 0xFF
         tile_y = bg_y & 0x07
         map_row_base = map_base + ((bg_y >> 3) * 32)
@@ -1876,6 +1982,8 @@ class PPU:
         map_base: int,
         wx: int,
     ) -> None:
+        if self.profile_enabled:
+            self._profile_window_fast_pixels += end_x - start_x
         tile_y = state.window_line & 0x07
         map_row_base = map_base + (((state.window_line & 0xFF) >> 3) * 32)
         self._render_unscrolled_tilemap_span_fast(
@@ -1904,20 +2012,37 @@ class PPU:
     ) -> None:
         vram = self.bus.vram
         unsigned_tile_data = bool(lcdc & LCDC_BG_WINDOW_TILE_DATA)
+        tile_y_offset = tile_y * 2
+        decode_tile_row = _decoded_tile_row
         x = start_x
+        if ((x + scx) & 0x07) == 0:
+            while x + 8 <= end_x:
+                bg_x = (x + scx) & 0xFF
+                tile_id = vram[map_row_base + (bg_x >> 3)]
+                if unsigned_tile_data:
+                    tile_address = tile_id * 16 + tile_y_offset
+                else:
+                    signed_id = tile_id - 0x100 if tile_id & 0x80 else tile_id
+                    tile_address = 0x1000 + signed_id * 16 + tile_y_offset
+                lo = vram[tile_address & 0x1FFF]
+                hi = vram[(tile_address + 1) & 0x1FFF]
+                color_ids, shade_pixels = decode_tile_row(lo, hi, palette)
+                bg_color_ids[x : x + 8] = color_ids
+                row[x : x + 8] = shade_pixels
+                x += 8
         while x < end_x:
             bg_x = (x + scx) & 0xFF
             span = min(end_x - x, 8 - (bg_x & 0x07))
             tile_id = vram[map_row_base + (bg_x >> 3)]
             if unsigned_tile_data:
-                tile_address = tile_id * 16 + tile_y * 2
+                tile_address = tile_id * 16 + tile_y_offset
             else:
                 signed_id = tile_id - 0x100 if tile_id & 0x80 else tile_id
-                tile_address = 0x1000 + signed_id * 16 + tile_y * 2
+                tile_address = 0x1000 + signed_id * 16 + tile_y_offset
             lo = vram[tile_address & 0x1FFF]
             hi = vram[(tile_address + 1) & 0x1FFF]
             bit_offset = bg_x & 0x07
-            color_ids, shade_pixels = _decoded_tile_row(lo, hi, palette)
+            color_ids, shade_pixels = decode_tile_row(lo, hi, palette)
             if bit_offset == 0 and span == 8:
                 bg_color_ids[x : x + 8] = color_ids
                 row[x : x + 8] = shade_pixels
@@ -1941,21 +2066,38 @@ class PPU:
     ) -> None:
         vram = self.bus.vram
         unsigned_tile_data = bool(lcdc & LCDC_BG_WINDOW_TILE_DATA)
+        tile_y_offset = tile_y * 2
+        decode_tile_row = _decoded_tile_row
         x = start_x
+        if ((x - origin_x) & 0x07) == 0:
+            while x + 8 <= end_x:
+                wrapped_x = (x - origin_x) & 0xFF
+                tile_id = vram[map_row_base + (wrapped_x >> 3)]
+                if unsigned_tile_data:
+                    tile_address = tile_id * 16 + tile_y_offset
+                else:
+                    signed_id = tile_id - 0x100 if tile_id & 0x80 else tile_id
+                    tile_address = 0x1000 + signed_id * 16 + tile_y_offset
+                lo = vram[tile_address & 0x1FFF]
+                hi = vram[(tile_address + 1) & 0x1FFF]
+                color_ids, shade_pixels = decode_tile_row(lo, hi, palette)
+                bg_color_ids[x : x + 8] = color_ids
+                row[x : x + 8] = shade_pixels
+                x += 8
         while x < end_x:
             tilemap_x = x - origin_x
             wrapped_x = tilemap_x & 0xFF
             span = min(end_x - x, 8 - (wrapped_x & 0x07))
             tile_id = vram[map_row_base + (wrapped_x >> 3)]
             if unsigned_tile_data:
-                tile_address = tile_id * 16 + tile_y * 2
+                tile_address = tile_id * 16 + tile_y_offset
             else:
                 signed_id = tile_id - 0x100 if tile_id & 0x80 else tile_id
-                tile_address = 0x1000 + signed_id * 16 + tile_y * 2
+                tile_address = 0x1000 + signed_id * 16 + tile_y_offset
             lo = vram[tile_address & 0x1FFF]
             hi = vram[(tile_address + 1) & 0x1FFF]
             bit_offset = wrapped_x & 0x07
-            color_ids, shade_pixels = _decoded_tile_row(lo, hi, palette)
+            color_ids, shade_pixels = decode_tile_row(lo, hi, palette)
             if bit_offset == 0 and span == 8:
                 bg_color_ids[x : x + 8] = color_ids
                 row[x : x + 8] = shade_pixels
@@ -1979,6 +2121,11 @@ class PPU:
 
         selected = self._selected_sprites_for_line(state.lcdc, y)
         selected.sort(key=lambda sprite: (sprite[0], sprite[1]))
+        if self.profile_enabled and selected:
+            sprite_pixels = 0
+            for sprite_x, _index, _sprite_y, _tile_id, _attrs, _raw_x in selected:
+                sprite_pixels += max(0, min(end_x, sprite_x + 8) - max(start_x, sprite_x))
+            self._profile_sprite_pixels += sprite_pixels
         fetch_delays: dict[int, int] = {}
         saw_fully_off_left_sprite = False
         for sprite_x, index, _sprite_y, _tile_id, _attrs, raw_x in selected:
@@ -2458,6 +2605,18 @@ class PPU:
         self._line_forced_obj_penalty_events = []
         self._line_window_penalty_dots = self._segmented_window_mode3_penalty()
         self._line_obj_penalty_dots = self._segmented_obj_mode3_penalty(self._scanline)
+        if self.profile_enabled:
+            selected_count = len(self._line_selected_sprites)
+            self._profile_mode3_lines += 1
+            self._profile_selected_sprites += selected_count
+            self._profile_max_sprites_per_line = max(
+                self._profile_max_sprites_per_line,
+                selected_count,
+            )
+            if selected_count:
+                self._profile_sprite_lines += 1
+            self._profile_obj_penalty_dots += self._line_obj_penalty_dots
+            self._profile_window_penalty_dots += self._line_window_penalty_dots
 
     def _finish_mode3_line(self, y: int) -> None:
         if (
@@ -2468,6 +2627,8 @@ class PPU:
             self.render_scanline(y)
             self._clear_line_rendering()
             return
+        if self.profile_enabled:
+            self._profile_rendered_lines += 1
         self._render_active_line_until(SCREEN_WIDTH)
         self.framebuffer[y] = self._line_row
         if self._line_window_activation_count:
@@ -2557,6 +2718,8 @@ class PPU:
     ) -> bool:
         if start_x >= end_x:
             return False
+        if self.profile_enabled:
+            self._profile_render_segments += 1
         if not state.lcdc & LCDC_ENABLE:
             for x in range(start_x, end_x):
                 row[x] = 0

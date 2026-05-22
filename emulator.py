@@ -73,12 +73,30 @@ class Emulator:
             raise ValueError("max_frames must be non-negative")
         frame_target = None if max_frames is None else self.bus.ppu.frame_count + max_frames
 
-        def stop_condition() -> bool:
-            serial_done = stop_on_serial_result and (
-                "Passed" in self.bus.serial_text or "Failed" in self.bus.serial_text
-            )
-            frame_done = frame_target is not None and self.bus.ppu.frame_count >= frame_target
-            return serial_done or frame_done
+        stop_condition = None
+        stop_frame_ppu = None
+        stop_frame_target = None
+        if frame_target is not None and not stop_on_serial_result:
+            ppu = self.bus.ppu
+            stop_frame_ppu = ppu
+            stop_frame_target = frame_target
+
+        elif stop_on_serial_result and frame_target is None:
+            bus = self.bus
+
+            def stop_condition() -> bool:
+                return "Passed" in bus.serial_text or "Failed" in bus.serial_text
+
+        elif stop_on_serial_result:
+            bus = self.bus
+            ppu = bus.ppu
+
+            def stop_condition() -> bool:
+                return (
+                    "Passed" in bus.serial_text
+                    or "Failed" in bus.serial_text
+                    or ppu.frame_count >= frame_target
+                )
 
         def drain_audio() -> None:
             if audio_sink is None:
@@ -96,7 +114,9 @@ class Emulator:
                 trace=trace,
                 trace_sink=trace_sink,
                 step_mode=step_mode,
-                stop_condition=stop_condition if stop_on_serial_result or frame_target is not None else None,
+                stop_condition=stop_condition,
+                stop_frame_ppu=stop_frame_ppu,
+                stop_frame_target=stop_frame_target,
                 after_step=drain_audio if audio_sink is not None else None,
             )
             drain_audio()

@@ -31,6 +31,11 @@ PPM_FOUR_PIXEL_CHUNKS = tuple(
     + PPM_DMG_PIXELS[(index >> 6) & 0x03]
     for index in range(256)
 )
+PPM_EIGHT_PIXEL_CHUNKS = tuple(
+    PPM_FOUR_PIXEL_CHUNKS[index & 0xFF]
+    + PPM_FOUR_PIXEL_CHUNKS[(index >> 8) & 0xFF]
+    for index in range(65536)
+)
 
 DEFAULT_KEYMAP = {
     "z": "a",
@@ -150,10 +155,24 @@ def framebuffer_to_tk_ppm_data(framebuffer: list[list[int]]) -> bytes:
     )
     data = bytearray(header)
     pixels = PPM_DMG_PIXELS
+    wide_chunks = PPM_EIGHT_PIXEL_CHUNKS
     chunks = PPM_FOUR_PIXEL_CHUNKS
     for row in framebuffer:
         x = 0
         row_width = len(row)
+        while x + 7 < row_width:
+            chunk_index = (
+                (row[x] & 0x03)
+                | ((row[x + 1] & 0x03) << 2)
+                | ((row[x + 2] & 0x03) << 4)
+                | ((row[x + 3] & 0x03) << 6)
+                | ((row[x + 4] & 0x03) << 8)
+                | ((row[x + 5] & 0x03) << 10)
+                | ((row[x + 6] & 0x03) << 12)
+                | ((row[x + 7] & 0x03) << 14)
+            )
+            data.extend(wide_chunks[chunk_index])
+            x += 8
         while x + 3 < row_width:
             chunk_index = (
                 (row[x] & 0x03)
@@ -199,6 +218,30 @@ class TkDisplay:
         self._profile_run_seconds = 0.0
         self._profile_draw_seconds = 0.0
         self._profile_audio_seconds = 0.0
+        self._profile_cpu_instructions = 0
+        self._profile_cpu_cycles = 0
+        self._profile_cpu_min_instructions: int | None = None
+        self._profile_cpu_max_instructions = 0
+        self._profile_cpu_interrupts = 0
+        self._profile_cpu_halt_cycles = 0
+        self._profile_cpu_halt_batches = 0
+        self._profile_bus_slow_cycles = 0
+        self._profile_bus_oam_dma_cycles = 0
+        self._profile_bus_oam_dma_starts = 0
+        self._profile_bus_timer_overflows = 0
+        self._profile_ppu_mode3_lines = 0
+        self._profile_ppu_rendered_lines = 0
+        self._profile_ppu_render_segments = 0
+        self._profile_ppu_sprite_lines = 0
+        self._profile_ppu_selected_sprites = 0
+        self._profile_ppu_max_sprites_per_line = 0
+        self._profile_ppu_obj_penalty_dots = 0
+        self._profile_ppu_window_penalty_dots = 0
+        self._profile_ppu_bg_fast_pixels = 0
+        self._profile_ppu_bg_slow_pixels = 0
+        self._profile_ppu_window_fast_pixels = 0
+        self._profile_ppu_window_slow_pixels = 0
+        self._profile_ppu_sprite_pixels = 0
         self._profile_apu_seconds = 0.0
         self._profile_apu_samples = 0
         self._profile_apu_min_samples: int | None = None
@@ -244,6 +287,7 @@ class TkDisplay:
             self._start_audio(raise_on_error=True)
         self._update_title()
         self._running = True
+        self._profile_report_started = time.perf_counter()
         self._schedule_next_frame(0)
         self._root.mainloop()
 
@@ -313,6 +357,9 @@ class TkDisplay:
         audio_stats = None
         if not self._paused:
             run_started = time.perf_counter()
+            cpu = getattr(self.emulator, "cpu", None)
+            cpu_instructions_before = getattr(cpu, "instructions", 0)
+            cpu_cycles_before = getattr(cpu, "cycles", 0)
             self.emulator.run(
                 max_instructions=self.config.max_instructions_per_frame,
                 max_frames=1,
@@ -320,6 +367,14 @@ class TkDisplay:
                 trace_sink=self._trace_sink,
             )
             run_elapsed = time.perf_counter() - run_started
+            cpu_instructions = max(
+                0,
+                getattr(cpu, "instructions", 0) - cpu_instructions_before,
+            )
+            cpu_cycles = max(0, getattr(cpu, "cycles", 0) - cpu_cycles_before)
+            cpu_profile = self._consume_cpu_profile()
+            bus_profile = self._consume_bus_profile()
+            ppu_profile = self._consume_ppu_profile()
             apu_profile = self._consume_apu_profile()
             audio_started = time.perf_counter()
             audio_stats = self._write_audio()
@@ -335,6 +390,11 @@ class TkDisplay:
                 run_elapsed,
                 draw_elapsed,
                 audio_elapsed,
+                cpu_instructions,
+                cpu_cycles,
+                cpu_profile,
+                bus_profile,
+                ppu_profile,
                 apu_profile,
                 audio_stats,
                 elapsed,
@@ -371,6 +431,11 @@ class TkDisplay:
         run_seconds: float,
         draw_seconds: float,
         audio_seconds: float,
+        cpu_instructions: int,
+        cpu_cycles: int,
+        cpu_profile,
+        bus_profile,
+        ppu_profile,
         apu_profile,
         audio_stats: AudioPlaybackStats | None,
         total_seconds: float,
@@ -381,6 +446,43 @@ class TkDisplay:
         self._profile_run_seconds += run_seconds
         self._profile_draw_seconds += draw_seconds
         self._profile_audio_seconds += audio_seconds
+        self._profile_cpu_instructions += cpu_instructions
+        self._profile_cpu_cycles += cpu_cycles
+        self._profile_cpu_min_instructions = (
+            cpu_instructions
+            if self._profile_cpu_min_instructions is None
+            else min(self._profile_cpu_min_instructions, cpu_instructions)
+        )
+        self._profile_cpu_max_instructions = max(
+            self._profile_cpu_max_instructions,
+            cpu_instructions,
+        )
+        if cpu_profile is not None:
+            self._profile_cpu_interrupts += cpu_profile.interrupt_entries
+            self._profile_cpu_halt_cycles += cpu_profile.halt_idle_cycles
+            self._profile_cpu_halt_batches += cpu_profile.halt_idle_batches
+        if bus_profile is not None:
+            self._profile_bus_slow_cycles += bus_profile.slow_system_counter_cycles
+            self._profile_bus_oam_dma_cycles += bus_profile.oam_dma_cycles
+            self._profile_bus_oam_dma_starts += bus_profile.oam_dma_starts
+            self._profile_bus_timer_overflows += bus_profile.timer_overflows
+        if ppu_profile is not None:
+            self._profile_ppu_mode3_lines += ppu_profile.mode3_lines
+            self._profile_ppu_rendered_lines += ppu_profile.rendered_lines
+            self._profile_ppu_render_segments += ppu_profile.render_segments
+            self._profile_ppu_sprite_lines += ppu_profile.sprite_lines
+            self._profile_ppu_selected_sprites += ppu_profile.selected_sprites
+            self._profile_ppu_max_sprites_per_line = max(
+                self._profile_ppu_max_sprites_per_line,
+                ppu_profile.max_sprites_per_line,
+            )
+            self._profile_ppu_obj_penalty_dots += ppu_profile.obj_penalty_dots
+            self._profile_ppu_window_penalty_dots += ppu_profile.window_penalty_dots
+            self._profile_ppu_bg_fast_pixels += ppu_profile.bg_fast_pixels
+            self._profile_ppu_bg_slow_pixels += ppu_profile.bg_slow_pixels
+            self._profile_ppu_window_fast_pixels += ppu_profile.window_fast_pixels
+            self._profile_ppu_window_slow_pixels += ppu_profile.window_slow_pixels
+            self._profile_ppu_sprite_pixels += ppu_profile.sprite_pixels
         if apu_profile is not None:
             self._profile_apu_seconds += apu_profile.tick_seconds
             self._profile_apu_samples += apu_profile.generated_samples
@@ -416,12 +518,33 @@ class TkDisplay:
         wall_seconds = now - self._profile_report_started
         frames = self._profile_frames
         apu_min_samples = self._profile_apu_min_samples or 0
+        cpu_min_instructions = self._profile_cpu_min_instructions or 0
         parts = [
             "window-profile",
             f"frames={frames}",
             f"run_ms={self._profile_run_seconds / frames * 1000:.2f}",
             f"draw_ms={self._profile_draw_seconds / frames * 1000:.2f}",
             f"audio_ms={self._profile_audio_seconds / frames * 1000:.2f}",
+            f"cpu_instr={self._profile_cpu_instructions}",
+            f"cpu_frame_instr={cpu_min_instructions}-{self._profile_cpu_max_instructions}",
+            f"cpu_cycles={self._profile_cpu_cycles}",
+            f"cpu_interrupts={self._profile_cpu_interrupts}",
+            f"cpu_halt_cycles={self._profile_cpu_halt_cycles}",
+            f"cpu_halt_batches={self._profile_cpu_halt_batches}",
+            f"bus_slow_cycles={self._profile_bus_slow_cycles}",
+            f"bus_dma_cycles={self._profile_bus_oam_dma_cycles}",
+            f"bus_dma_starts={self._profile_bus_oam_dma_starts}",
+            f"bus_timer_overflows={self._profile_bus_timer_overflows}",
+            f"ppu_lines={self._profile_ppu_rendered_lines}/{self._profile_ppu_mode3_lines}",
+            f"ppu_segments={self._profile_ppu_render_segments}",
+            f"ppu_sprite_lines={self._profile_ppu_sprite_lines}",
+            f"ppu_sprites={self._profile_ppu_selected_sprites}",
+            f"ppu_max_sprites={self._profile_ppu_max_sprites_per_line}",
+            f"ppu_obj_dots={self._profile_ppu_obj_penalty_dots}",
+            f"ppu_win_dots={self._profile_ppu_window_penalty_dots}",
+            f"ppu_bg_px={self._profile_ppu_bg_fast_pixels}/{self._profile_ppu_bg_slow_pixels}",
+            f"ppu_win_px={self._profile_ppu_window_fast_pixels}/{self._profile_ppu_window_slow_pixels}",
+            f"ppu_sprite_px={self._profile_ppu_sprite_pixels}",
             f"apu_ms={self._profile_apu_seconds / frames * 1000:.2f}",
             f"apu_samples={self._profile_apu_samples}",
             f"apu_frame_samples={apu_min_samples}-{self._profile_apu_max_samples}",
@@ -451,6 +574,30 @@ class TkDisplay:
         self._profile_run_seconds = 0.0
         self._profile_draw_seconds = 0.0
         self._profile_audio_seconds = 0.0
+        self._profile_cpu_instructions = 0
+        self._profile_cpu_cycles = 0
+        self._profile_cpu_min_instructions = None
+        self._profile_cpu_max_instructions = 0
+        self._profile_cpu_interrupts = 0
+        self._profile_cpu_halt_cycles = 0
+        self._profile_cpu_halt_batches = 0
+        self._profile_bus_slow_cycles = 0
+        self._profile_bus_oam_dma_cycles = 0
+        self._profile_bus_oam_dma_starts = 0
+        self._profile_bus_timer_overflows = 0
+        self._profile_ppu_mode3_lines = 0
+        self._profile_ppu_rendered_lines = 0
+        self._profile_ppu_render_segments = 0
+        self._profile_ppu_sprite_lines = 0
+        self._profile_ppu_selected_sprites = 0
+        self._profile_ppu_max_sprites_per_line = 0
+        self._profile_ppu_obj_penalty_dots = 0
+        self._profile_ppu_window_penalty_dots = 0
+        self._profile_ppu_bg_fast_pixels = 0
+        self._profile_ppu_bg_slow_pixels = 0
+        self._profile_ppu_window_fast_pixels = 0
+        self._profile_ppu_window_slow_pixels = 0
+        self._profile_ppu_sprite_pixels = 0
         self._profile_apu_seconds = 0.0
         self._profile_apu_samples = 0
         self._profile_apu_min_samples = None
@@ -541,13 +688,51 @@ class TkDisplay:
         return self._audio_player.stats()
 
     def _configure_apu_profile(self) -> None:
-        if hasattr(self.emulator.bus.apu, "profile_enabled"):
-            self.emulator.bus.apu.profile_enabled = self.config.profile_window
+        enabled = self.config.profile_window
+        cpu = getattr(self.emulator, "cpu", None)
+        if hasattr(cpu, "profile_enabled"):
+            cpu.profile_enabled = enabled
+        bus = getattr(self.emulator, "bus", None)
+        if hasattr(bus, "profile_enabled"):
+            bus.profile_enabled = enabled
+        ppu = getattr(bus, "ppu", None)
+        if hasattr(ppu, "profile_enabled"):
+            ppu.profile_enabled = enabled
+        apu = getattr(bus, "apu", None)
+        if hasattr(apu, "profile_enabled"):
+            apu.profile_enabled = enabled
 
     def _consume_apu_profile(self):
         if not self.config.profile_window:
             return None
         consume_profile = getattr(self.emulator.bus.apu, "consume_profile", None)
+        if consume_profile is None:
+            return None
+        return consume_profile()
+
+    def _consume_cpu_profile(self):
+        if not self.config.profile_window:
+            return None
+        cpu = getattr(self.emulator, "cpu", None)
+        consume_profile = getattr(cpu, "consume_profile", None)
+        if consume_profile is None:
+            return None
+        return consume_profile()
+
+    def _consume_bus_profile(self):
+        if not self.config.profile_window:
+            return None
+        bus = getattr(self.emulator, "bus", None)
+        consume_profile = getattr(bus, "consume_profile", None)
+        if consume_profile is None:
+            return None
+        return consume_profile()
+
+    def _consume_ppu_profile(self):
+        if not self.config.profile_window:
+            return None
+        ppu = getattr(self.emulator.bus, "ppu", None)
+        consume_profile = getattr(ppu, "consume_profile", None)
         if consume_profile is None:
             return None
         return consume_profile()

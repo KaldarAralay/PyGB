@@ -355,34 +355,41 @@ class APU:
         right_volume = (nr50 & 0x07) + 1
         left = 0
         right = 0
+        enabled = self._channel_output_enabled
+        volumes = self.channel_volumes
+        duty_positions = self.duty_positions
+        duty_patterns = PULSE_DUTY_PATTERNS
 
-        if io[0x12] & 0xF8:
+        nr12 = io[0x12]
+        if nr12 & 0xF8:
             sample = 0
-            if self._channel_output_enabled[0]:
+            if enabled[0]:
                 duty = (io[0x11] >> 6) & 0x03
-                if PULSE_DUTY_PATTERNS[duty][self.duty_positions[0]]:
-                    sample = self.channel_volumes[0]
+                if duty_patterns[duty][duty_positions[0]]:
+                    sample = volumes[0]
             dac_sample = 15 - sample * 2
             if nr51 & 0x01:
                 right += dac_sample
             if nr51 & 0x10:
                 left += dac_sample
 
-        if io[0x17] & 0xF8:
+        nr17 = io[0x17]
+        if nr17 & 0xF8:
             sample = 0
-            if self._channel_output_enabled[1]:
+            if enabled[1]:
                 duty = (io[0x16] >> 6) & 0x03
-                if PULSE_DUTY_PATTERNS[duty][self.duty_positions[1]]:
-                    sample = self.channel_volumes[1]
+                if duty_patterns[duty][duty_positions[1]]:
+                    sample = volumes[1]
             dac_sample = 15 - sample * 2
             if nr51 & 0x02:
                 right += dac_sample
             if nr51 & 0x20:
                 left += dac_sample
 
-        if io[0x1A] & 0x80:
+        nr1a = io[0x1A]
+        if nr1a & 0x80:
             sample = 0
-            if self._channel_output_enabled[2]:
+            if enabled[2]:
                 volume_code = (io[0x1C] >> 5) & 0x03
                 if volume_code != 0:
                     sample = self.wave_sample_buffer >> (volume_code - 1)
@@ -392,12 +399,13 @@ class APU:
             if nr51 & 0x40:
                 left += dac_sample
 
-        if io[0x21] & 0xF8:
-            if not self._noise_lfsr_can_defer():
+        nr21 = io[0x21]
+        if nr21 & 0xF8:
+            if not (volumes[3] == 0 and not (nr21 & 0x08 and nr21 & 0x07)):
                 self._flush_pending_noise_lfsr_steps()
             sample = 0
-            if self._channel_output_enabled[3] and not self.noise_lfsr & 0x01:
-                sample = self.channel_volumes[3]
+            if enabled[3] and not self.noise_lfsr & 0x01:
+                sample = volumes[3]
             dac_sample = 15 - sample * 2
             if nr51 & 0x08:
                 right += dac_sample
@@ -554,10 +562,14 @@ class APU:
         if not self._any_channel_dac_enabled():
             return (0, 0)
         left, right = sample
-        left_output = float(left) - self._high_pass_capacitors[0]
-        right_output = float(right) - self._high_pass_capacitors[1]
-        self._high_pass_capacitors[0] = float(left) - left_output * self._high_pass_charge_factor
-        self._high_pass_capacitors[1] = float(right) - right_output * self._high_pass_charge_factor
+        capacitors = self._high_pass_capacitors
+        charge_factor = self._high_pass_charge_factor
+        left_input = float(left)
+        right_input = float(right)
+        left_output = left_input - capacitors[0]
+        right_output = right_input - capacitors[1]
+        capacitors[0] = left_input - left_output * charge_factor
+        capacitors[1] = right_input - right_output * charge_factor
         return int(round(left_output)), int(round(right_output))
 
     def _reset_high_pass_filter(self) -> None:
@@ -991,24 +1003,43 @@ class APU:
             self._pending_output_cycles = 0
             return
 
+        cpu_clock = CPU_CLOCK_HZ
+        advance_core = self._advance_core
+        queue_sample = self._queue_resampler_sample
+        mix_sample = self._mix_sample_from_dacs
+        sample_cycle_accumulator = self._sample_cycle_accumulator
+        cycles_until_subsample = self._cycles_until_subsample
+        powered = bool(self.bus.io[NR52] & 0x80)
         while pending_cycles > 0:
-            cycles_to_subsample = self._cycles_until_subsample
+            cycles_to_subsample = cycles_until_subsample
             if pending_cycles < cycles_to_subsample:
                 if flush:
-                    self._advance_core(pending_cycles)
-                    self._sample_cycle_accumulator += pending_cycles * subsample_rate
+                    advance_core(pending_cycles)
+                    sample_cycle_accumulator += pending_cycles * subsample_rate
                     pending_cycles = 0
-                    self._cycles_until_subsample = self._cycles_until_next_subsample()
+                    remaining_cycles = cpu_clock - sample_cycle_accumulator
+                    cycles_until_subsample = (
+                        1
+                        if remaining_cycles <= 0
+                        else (remaining_cycles + subsample_rate - 1) // subsample_rate
+                    )
                 break
 
-            self._advance_core(cycles_to_subsample)
-            self._sample_cycle_accumulator += cycles_to_subsample * subsample_rate
+            advance_core(cycles_to_subsample)
+            sample_cycle_accumulator += cycles_to_subsample * subsample_rate
             pending_cycles -= cycles_to_subsample
-            while self._sample_cycle_accumulator >= CPU_CLOCK_HZ:
-                self._sample_cycle_accumulator -= CPU_CLOCK_HZ
-                sample = self._mix_sample_from_dacs() if self.powered else (0, 0)
-                self._queue_resampler_sample(sample)
-            self._cycles_until_subsample = self._cycles_until_next_subsample()
+            while sample_cycle_accumulator >= cpu_clock:
+                sample_cycle_accumulator -= cpu_clock
+                sample = mix_sample() if powered else (0, 0)
+                queue_sample(sample)
+            remaining_cycles = cpu_clock - sample_cycle_accumulator
+            cycles_until_subsample = (
+                1
+                if remaining_cycles <= 0
+                else (remaining_cycles + subsample_rate - 1) // subsample_rate
+            )
+        self._sample_cycle_accumulator = sample_cycle_accumulator
+        self._cycles_until_subsample = cycles_until_subsample
         self._pending_output_cycles = pending_cycles
 
     def _flush_pending_output_cycles(self) -> None:

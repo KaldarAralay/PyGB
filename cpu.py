@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from bus import Bus
+from cartridge import MapperKind
 from opcodes import INVALID_OPCODES, disassemble
 
 
@@ -10,6 +11,9 @@ FLAG_Z = 0x80
 FLAG_N = 0x40
 FLAG_H = 0x20
 FLAG_C = 0x10
+PPU_DOTS_PER_LINE = 456
+PPU_VBLANK_LINE = 144
+PPU_LINES_PER_FRAME = 154
 
 
 class IllegalInstruction(Exception):
@@ -29,9 +33,20 @@ class CPUTrace:
         return f"{self.pc:04X}: {raw_text} {self.mnemonic:<20} {self.registers} CY:{self.cycles}"
 
 
+@dataclass(frozen=True)
+class CPUProfileStats:
+    interrupt_entries: int
+    halt_idle_batches: int
+    halt_idle_cycles: int
+
+
 class CPU:
     def __init__(self, bus: Bus, start_pc: int = 0x0100, post_boot: bool = True) -> None:
         self.bus = bus
+        self._fast_rom_cartridge = bus.cartridge
+        self._fast_rom_data = bus.cartridge.data
+        self._fast_rom_data_len = len(bus.cartridge.data)
+        self._fast_rom_is_mbc3 = bus.cartridge.type_spec.mapper is MapperKind.MBC3
         self.a = 0x01 if post_boot else 0
         self.f = 0xB0 if post_boot else 0
         self.b = 0x00
@@ -52,6 +67,21 @@ class CPU:
         self.last_trace: CPUTrace | None = None
         self._instruction_timing_active = False
         self._instruction_cycles_used = 0
+        self.profile_enabled = False
+        self._profile_interrupt_entries = 0
+        self._profile_halt_idle_batches = 0
+        self._profile_halt_idle_cycles = 0
+
+    def consume_profile(self) -> CPUProfileStats:
+        stats = CPUProfileStats(
+            interrupt_entries=self._profile_interrupt_entries,
+            halt_idle_batches=self._profile_halt_idle_batches,
+            halt_idle_cycles=self._profile_halt_idle_cycles,
+        )
+        self._profile_interrupt_entries = 0
+        self._profile_halt_idle_batches = 0
+        self._profile_halt_idle_cycles = 0
+        return stats
 
     @property
     def af(self) -> int:
@@ -89,7 +119,7 @@ class CPU:
         self.h = (value >> 8) & 0xFF
         self.l = value & 0xFF
 
-    def step(self, trace: bool = False) -> int:
+    def step(self, trace: bool = False, prefetched_opcode: int | None = None) -> int:
         self.last_trace = None
         if self.stopped:
             if self.bus.stop_wake_requested() or self._pending_interrupts():
@@ -119,7 +149,12 @@ class CPU:
             raw, mnemonic = disassemble(self.bus, pc_before)
             registers_before = self.format_registers()
         self._begin_instruction_timing()
-        opcode = self._fetch8()
+        if prefetched_opcode is None or trace:
+            opcode = self._fetch8()
+        else:
+            opcode = prefetched_opcode & 0xFF
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
         cycles = self._execute_opcode(opcode)
         self.instructions += 1
         self._pad_instruction_cycles(cycles)
@@ -129,6 +164,19 @@ class CPU:
             self.last_trace = CPUTrace(pc_before, raw, mnemonic, registers_before, cycles)
         return cycles
 
+    def _step_prefetched_fast(self, opcode: int) -> int:
+        cycles = self._execute_prefetched_fast(opcode & 0xFF)
+        if cycles:
+            self.instructions += 1
+            self._finish_instruction()
+            return cycles
+        self._add_cycles(4)
+        self.pc = (self.pc + 1) & 0xFFFF
+        cycles = self._execute_opcode(opcode & 0xFF)
+        self.instructions += 1
+        self._finish_instruction()
+        return cycles
+
     def run(
         self,
         max_instructions: int | None = None,
@@ -136,28 +184,130 @@ class CPU:
         trace_sink=None,
         step_mode: bool = False,
         stop_condition=None,
+        stop_frame_ppu=None,
+        stop_frame_target: int | None = None,
         after_step=None,
     ) -> None:
         if max_instructions is not None and max_instructions < 0:
             raise ValueError("max_instructions must be non-negative")
         steps = 0
+        fast_step = not trace and not step_mode and after_step is None
+        bus = self.bus
+        mapper = bus.mapper
+        rom_data = self._fast_rom_data
+        rom_data_len = self._fast_rom_data_len
+        mbc3_fast_rom = self._fast_rom_is_mbc3
+        fast_rom_cartridge = self._fast_rom_cartridge
         while max_instructions is None or steps < max_instructions:
-            if stop_condition is not None and stop_condition():
+            if stop_frame_target is not None:
+                if stop_frame_ppu.frame_count >= stop_frame_target:
+                    break
+            elif stop_condition is not None and stop_condition():
                 break
-            idle_cycles = self._halt_idle_cycles(
-                max_instructions=max_instructions,
-                steps=steps,
-                trace=trace,
-                step_mode=step_mode,
-                after_step=after_step,
+            if fast_step:
+                if self.stopped:
+                    if bus.stop_wake_requested() or self._pending_interrupts():
+                        self.stopped = False
+                        bus.exit_stop()
+                    else:
+                        steps += 1
+                        continue
+                pending_interrupts = bus.ie & bus.io[0x0F] & 0x1F
+                if pending_interrupts:
+                    if self.halted:
+                        self.halted = False
+                    if self.ime:
+                        interrupt_cycles = self._service_interrupt_pending(pending_interrupts)
+                        self._finish_instruction()
+                        steps += 1
+                        continue
+            idle_cycles = (
+                self._halt_idle_cycles(
+                    max_instructions=max_instructions,
+                    steps=steps,
+                    trace=trace,
+                    step_mode=step_mode,
+                    after_step=after_step,
+                )
+                if self.halted
+                else 0
             )
             if idle_cycles:
+                if self.profile_enabled:
+                    self._profile_halt_idle_batches += 1
+                    self._profile_halt_idle_cycles += idle_cycles
                 self._add_cycles(idle_cycles)
                 steps += idle_cycles // 4
                 if after_step is not None:
                     after_step()
                 continue
-            self.step(trace=trace)
+            if fast_step and self.halted and self._pending_interrupts():
+                self.halted = False
+            pc = self.pc
+            if pc <= 0x7FFF:
+                if bus._oam_dma_active:
+                    opcode = bus.read8(pc)
+                elif bus.boot_rom_enabled and pc < len(bus.boot_rom):
+                    opcode = bus.boot_rom[pc]
+                elif mbc3_fast_rom:
+                    if pc < 0x4000:
+                        opcode = rom_data[pc] if pc < rom_data_len else 0xFF
+                    else:
+                        opcode = rom_data[
+                            fast_rom_cartridge._mbc3_rom_bank_offset + (pc - 0x4000)
+                        ]
+                else:
+                    opcode = mapper.read_rom(pc)
+            else:
+                opcode = self._read8_fast(pc)
+            if opcode == 0xF0:
+                ly_wait_steps = self._fast_forward_ly_wait_loop(
+                    max_instructions=max_instructions,
+                    steps=steps,
+                    trace=trace,
+                    step_mode=step_mode,
+                    after_step=after_step,
+                )
+                if ly_wait_steps:
+                    steps += ly_wait_steps
+                    continue
+            elif opcode == 0x3D:
+                dec8_steps = self._fast_forward_dec8_delay_loop(
+                    max_instructions=max_instructions,
+                    steps=steps,
+                    trace=trace,
+                    step_mode=step_mode,
+                    after_step=after_step,
+                )
+                if dec8_steps:
+                    steps += dec8_steps
+                    continue
+            elif opcode in {0x00, 0x0B, 0x1B}:
+                loop_steps = self._fast_forward_dec16_delay_loop(
+                    max_instructions=max_instructions,
+                    steps=steps,
+                    trace=trace,
+                    step_mode=step_mode,
+                    after_step=after_step,
+                )
+                if loop_steps:
+                    steps += loop_steps
+                    continue
+                if opcode == 0x00:
+                    nop_steps = self._fast_forward_nops(
+                        max_instructions=max_instructions,
+                        steps=steps,
+                        trace=trace,
+                        step_mode=step_mode,
+                        after_step=after_step,
+                    )
+                    if nop_steps:
+                        steps += nop_steps
+                        continue
+            if fast_step:
+                self._step_prefetched_fast(opcode)
+            else:
+                self.step(trace=trace, prefetched_opcode=None if trace else opcode)
             steps += 1
             if after_step is not None:
                 after_step()
@@ -196,6 +346,345 @@ class CPU:
         if cycles <= 0:
             return 0
         return min(max_cycles, ((cycles + 3) // 4) * 4)
+
+    def _fast_forward_nops(
+        self,
+        *,
+        max_instructions: int | None,
+        steps: int,
+        trace: bool,
+        step_mode: bool,
+        after_step,
+    ) -> int:
+        if trace or step_mode or after_step is not None:
+            return 0
+        if self.halted or self.stopped or self._halt_bug or self._ime_delay:
+            return 0
+        if self.ime and self._pending_interrupts():
+            return 0
+        if not self._can_fast_fetch_nop_at(self.pc):
+            return 0
+
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if remaining_instructions < 2:
+            return 0
+        max_cycles = min(remaining_instructions * 4, 4096)
+        event_cycles = self._fast_forward_safe_cycles(max_cycles)
+        max_nops = min(remaining_instructions, event_cycles // 4)
+        if max_nops < 2:
+            return 0
+
+        count = 1
+        pc = (self.pc + 1) & 0xFFFF
+        while count < max_nops and self._can_fast_fetch_nop_at(pc):
+            count += 1
+            pc = (pc + 1) & 0xFFFF
+        if count < 2:
+            return 0
+
+        self.pc = (self.pc + count) & 0xFFFF
+        self.instructions += count
+        self._add_cycles(count * 4)
+        self.f &= 0xF0
+        return count
+
+    def _fast_forward_dec8_delay_loop(
+        self,
+        *,
+        max_instructions: int | None,
+        steps: int,
+        trace: bool,
+        step_mode: bool,
+        after_step,
+    ) -> int:
+        if trace or step_mode or after_step is not None:
+            return 0
+        if self.halted or self.stopped or self._halt_bug or self._ime_delay:
+            return 0
+        if self.ime and self._pending_interrupts():
+            return 0
+
+        pc = self.pc
+        if not self._matches_bytes(pc, (0x3D, 0x20, 0xFD)):
+            return 0
+
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if remaining_instructions < 2:
+            return 0
+
+        remaining_iterations = self.a or 0x100
+        max_iterations = remaining_instructions // 2
+        max_cycles = min(max_iterations * 16, 4096)
+        event_cycles = self._fast_forward_safe_cycles(max_cycles)
+        max_iterations = min(max_iterations, max(0, event_cycles // 16))
+        if max_iterations < 1:
+            return 0
+
+        iterations = min(remaining_iterations, max_iterations)
+        completed = iterations == remaining_iterations
+        result = (self.a - iterations) & 0xFF
+        previous_value = (self.a - iterations + 1) & 0xFF
+        self.a = result
+        self.f = (
+            (self.f & FLAG_C)
+            | FLAG_N
+            | (FLAG_Z if result == 0 else 0)
+            | (FLAG_H if (previous_value & 0x0F) == 0x00 else 0)
+        )
+        self.pc = (pc + 3) & 0xFFFF if completed else pc
+        cycles = (iterations - 1) * 16 + (12 if completed else 16)
+        instruction_count = iterations * 2
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_ly_wait_loop(
+        self,
+        *,
+        max_instructions: int | None,
+        steps: int,
+        trace: bool,
+        step_mode: bool,
+        after_step,
+    ) -> int:
+        if trace or step_mode or after_step is not None:
+            return 0
+        if self.halted or self.stopped or self._halt_bug or self._ime_delay:
+            return 0
+        if self.ime and self._pending_interrupts():
+            return 0
+
+        pc = self.pc
+        if self.bus.read8(pc) != 0xF0 or self.bus.read8((pc + 1) & 0xFFFF) != 0x44:
+            return 0
+        compare_opcode = self.bus.read8((pc + 2) & 0xFFFF)
+        branch_opcode = self.bus.read8((pc + 3) & 0xFFFF)
+        if self.bus.read8((pc + 4) & 0xFFFF) != 0xFB:
+            return 0
+        if compare_opcode == 0xBC:
+            target = self.h
+        elif compare_opcode == 0xBD:
+            target = self.l
+        else:
+            return 0
+        if branch_opcode not in {0x20, 0x28}:
+            return 0
+
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if remaining_instructions < 3:
+            return 0
+        max_iterations = remaining_instructions // 3
+        max_cycles = min(max_iterations * 28, 4096)
+        safe_cycles = self._fast_forward_safe_cycles(max_cycles)
+        max_iterations = min(max_iterations, max(0, safe_cycles // 28))
+        if max_iterations < 1:
+            return 0
+
+        last_sample = self.a
+        for index in range(max_iterations):
+            sample = self._ly_after_cycles(8 + index * 28)
+            last_sample = sample
+            equal = sample == target
+            branch_taken = not equal if branch_opcode == 0x20 else equal
+            if not branch_taken:
+                self.a = sample
+                self._set_cp_flags(sample, target)
+                self.pc = (pc + 5) & 0xFFFF
+                instruction_count = (index + 1) * 3
+                cycles = index * 28 + 24
+                self.instructions += instruction_count
+                self._add_cycles(cycles)
+                return instruction_count
+
+        self.a = last_sample
+        self._set_cp_flags(last_sample, target)
+        instruction_count = max_iterations * 3
+        self.instructions += instruction_count
+        self._add_cycles(max_iterations * 28)
+        return instruction_count
+
+    def _ly_after_cycles(self, cycles: int) -> int:
+        ppu = getattr(self.bus, "ppu", None)
+        if ppu is None or not getattr(ppu, "lcd_enabled", False):
+            return self.bus.io[0x44]
+        scanline = getattr(ppu, "_scanline", 0)
+        line_dots = getattr(ppu, "line_dots", 0) + max(0, cycles)
+        scanline = (scanline + line_dots // PPU_DOTS_PER_LINE) % PPU_LINES_PER_FRAME
+        line_dots %= PPU_DOTS_PER_LINE
+        if scanline == PPU_LINES_PER_FRAME - 1 and line_dots >= 4:
+            return 0
+        if scanline < PPU_VBLANK_LINE and line_dots >= PPU_DOTS_PER_LINE - 4:
+            return (scanline + 1) & 0xFF
+        return scanline & 0xFF
+
+    def _set_cp_flags(self, left: int, right: int) -> None:
+        left &= 0xFF
+        right &= 0xFF
+        result = left - right
+        self.f = (
+            FLAG_N
+            | (FLAG_Z if (result & 0xFF) == 0 else 0)
+            | (FLAG_H if (left & 0x0F) < (right & 0x0F) else 0)
+            | (FLAG_C if left < right else 0)
+        )
+
+    def _fast_forward_dec16_delay_loop(
+        self,
+        *,
+        max_instructions: int | None,
+        steps: int,
+        trace: bool,
+        step_mode: bool,
+        after_step,
+    ) -> int:
+        if trace or step_mode or after_step is not None:
+            return 0
+        if self.halted or self.stopped or self._halt_bug or self._ime_delay:
+            return 0
+        if self.ime and self._pending_interrupts():
+            return 0
+
+        pc = self.pc
+        if self._matches_bytes(pc, (0x0B, 0x78, 0xB1, 0x20, 0xFB)):
+            register_name = "bc"
+            register_value = self.bc
+            instructions_per_iteration = 4
+            taken_cycles = 28
+            final_cycles = 24
+            final_pc = (pc + 5) & 0xFFFF
+        elif self._matches_bytes(pc, (0x1B, 0x7A, 0xB3, 0x20, 0xFB)):
+            register_name = "de"
+            register_value = self.de
+            instructions_per_iteration = 4
+            taken_cycles = 28
+            final_cycles = 24
+            final_pc = (pc + 5) & 0xFFFF
+        elif self._matches_bytes(pc, (0x00, 0x00, 0x00, 0x1B, 0x7A, 0xB3, 0x20, 0xF8)):
+            register_name = "de"
+            register_value = self.de
+            instructions_per_iteration = 7
+            taken_cycles = 40
+            final_cycles = 36
+            final_pc = (pc + 8) & 0xFFFF
+        else:
+            return 0
+
+        remaining_instructions = (
+            (1 << 20) if max_instructions is None else max_instructions - steps
+        )
+        if remaining_instructions < instructions_per_iteration:
+            return 0
+
+        remaining_iterations = register_value or 0x10000
+        max_iterations = remaining_instructions // instructions_per_iteration
+        max_cycles = min(max_iterations * taken_cycles, 4096)
+        event_cycles = self._fast_forward_safe_cycles(max_cycles)
+        max_iterations = min(max_iterations, max(0, event_cycles // taken_cycles))
+        if max_iterations < 1:
+            return 0
+
+        iterations = min(remaining_iterations, max_iterations)
+        completed = iterations == remaining_iterations
+        next_value = (register_value - iterations) & 0xFFFF
+        if register_name == "bc":
+            self.bc = next_value
+        else:
+            self.de = next_value
+        self.a = ((next_value >> 8) | (next_value & 0xFF)) & 0xFF
+        self.f = FLAG_Z if next_value == 0 else 0
+        self.pc = final_pc if completed else pc
+        cycles = (iterations - 1) * taken_cycles + (final_cycles if completed else taken_cycles)
+        instruction_count = iterations * instructions_per_iteration
+        self.instructions += instruction_count
+        self._add_cycles(cycles)
+        return instruction_count
+
+    def _fast_forward_safe_cycles(self, max_cycles: int) -> int:
+        if max_cycles <= 0:
+            return 0
+        if self.ime:
+            enabled_interrupts = self.bus.ie & 0x1F
+            stat_may_interrupt = bool(
+                enabled_interrupts & 0x02 and self.bus.io[0x41] & 0x78
+            )
+            timer_may_interrupt = bool(
+                enabled_interrupts & 0x04 and self.bus.io[0x07] & 0x04
+            )
+            serial_may_interrupt = bool(
+                enabled_interrupts & 0x08 and getattr(self.bus, "_serial_transfer_cycles", 0)
+            )
+            joypad_may_interrupt = bool(enabled_interrupts & 0x10)
+            if stat_may_interrupt or timer_may_interrupt or serial_may_interrupt or joypad_may_interrupt:
+                return self.bus.cycles_until_next_interrupt_event(max_cycles)
+            if enabled_interrupts & 0x01:
+                return self._cycles_until_vblank_or_frame_boundary(max_cycles)
+        return self._cycles_until_frame_boundary(max_cycles)
+
+    def _cycles_until_vblank_or_frame_boundary(self, max_cycles: int) -> int:
+        ppu = getattr(self.bus, "ppu", None)
+        if ppu is None or not getattr(ppu, "lcd_enabled", False):
+            return max_cycles
+        scanline = getattr(ppu, "_scanline", 0)
+        line_dots = getattr(ppu, "line_dots", 0)
+        if scanline < PPU_VBLANK_LINE:
+            cycles = (PPU_VBLANK_LINE - scanline) * PPU_DOTS_PER_LINE - line_dots
+            return max(1, min(max_cycles, cycles))
+        return self._cycles_until_frame_boundary(max_cycles)
+
+    def _cycles_until_frame_boundary(self, max_cycles: int) -> int:
+        ppu = getattr(self.bus, "ppu", None)
+        if ppu is None or not getattr(ppu, "lcd_enabled", False):
+            return max_cycles
+        scanline = getattr(ppu, "_scanline", 0)
+        line_dots = getattr(ppu, "line_dots", 0)
+        cycles = (PPU_LINES_PER_FRAME - scanline) * PPU_DOTS_PER_LINE - line_dots
+        return max(1, min(max_cycles, cycles))
+
+    def _matches_bytes(self, address: int, values: tuple[int, ...]) -> bool:
+        address &= 0xFFFF
+        end_address = address + len(values) - 1
+        bus = self.bus
+        if (
+            self._fast_rom_is_mbc3
+            and end_address <= 0x7FFF
+            and not bus._oam_dma_active
+            and not (bus.boot_rom_enabled and address < len(bus.boot_rom))
+        ):
+            data = self._fast_rom_data
+            if address < 0x4000:
+                if end_address >= 0x4000:
+                    return False
+                if end_address >= self._fast_rom_data_len:
+                    return False
+                offset = address
+            elif address >= 0x4000:
+                offset = self._fast_rom_cartridge._mbc3_rom_bank_offset + (address - 0x4000)
+            else:
+                return False
+            for index, value in enumerate(values):
+                if data[offset + index] != value:
+                    return False
+            return True
+        for index, value in enumerate(values):
+            if bus.read8((address + index) & 0xFFFF) != value:
+                return False
+        return True
+
+    def _can_fast_fetch_nop_at(self, address: int) -> bool:
+        address &= 0xFFFF
+        if not (
+            address <= 0x7FFF
+            or 0xC000 <= address <= 0xFDFF
+            or 0xFF80 <= address <= 0xFFFE
+        ):
+            return False
+        return self.bus.read8(address) == 0x00
 
     def format_registers(self) -> str:
         return (
@@ -237,9 +726,1608 @@ class CPU:
     def flag_c(self, value: bool) -> None:
         self._set_flag(FLAG_C, value)
 
+    def _execute_prefetched_fast(self, opcode: int) -> int:
+        pc = self.pc
+
+        if opcode == 0xFA and pc <= 0x7FFD:
+            bus = self.bus
+            lo = self._read8_fast(pc + 1)
+            hi = self._read8_fast(pc + 2)
+            address = lo | (hi << 8)
+            can_batch = self._can_batch_direct_memory_cycles()
+            value = self._read8_direct_fast(address, 16) if can_batch else None
+            if value is not None:
+                self.a = value
+                self.pc = (pc + 3) & 0xFFFF
+                self._add_cycles(16)
+                return 16
+            self._add_cycles(12)
+            self.pc = (pc + 3) & 0xFFFF
+            self.a = bus.read8(address)
+            self._add_cycles(4)
+            return 16
+        if opcode == 0xEA and pc <= 0x7FFD:
+            bus = self.bus
+            lo = self._read8_fast(pc + 1)
+            hi = self._read8_fast(pc + 2)
+            address = lo | (hi << 8)
+            if self._can_batch_direct_memory_cycles() and self._write8_direct_fast(address, self.a, 16):
+                self.pc = (pc + 3) & 0xFFFF
+                self._add_cycles(16)
+                return 16
+            self._add_cycles(12)
+            self.pc = (pc + 3) & 0xFFFF
+            bus.write8(address, self.a)
+            self._add_cycles(4)
+            return 16
+        if opcode in {0x20, 0x28, 0x30, 0x38, 0x18} and pc <= 0x7FFE:
+            offset = self._read8_fast(pc + 1)
+            next_pc = (pc + 2) & 0xFFFF
+            taken = (
+                opcode == 0x18
+                or (opcode == 0x20 and not self.f & FLAG_Z)
+                or (opcode == 0x28 and self.f & FLAG_Z)
+                or (opcode == 0x30 and not self.f & FLAG_C)
+                or (opcode == 0x38 and self.f & FLAG_C)
+            )
+            self.pc = (
+                (next_pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                if taken
+                else next_pc
+            )
+            cycles = 12 if taken else 8
+            self._add_cycles(cycles)
+            return cycles
+        if opcode == 0xCB and pc <= 0x7FFE:
+            cb = self._read8_fast(pc + 1)
+            if self._can_batch_direct_memory_cycles():
+                cycles = self._execute_cb_fast_register(cb)
+                if cycles:
+                    self.pc = (pc + 2) & 0xFFFF
+                    self._add_cycles(cycles)
+                    return cycles
+            if cb & 0x07 == 0x06:
+                cycles = self._execute_cb_fast_hl(cb, pc)
+                if cycles:
+                    return cycles
+        if opcode == 0xCD and pc <= 0x7FFD and self._can_batch_direct_memory_cycles():
+            sp_high = (self.sp - 1) & 0xFFFF
+            sp_low = (self.sp - 2) & 0xFFFF
+            if self._is_direct_fast_address(sp_high) and self._is_direct_fast_address(sp_low):
+                lo = self._read8_fast(pc + 1)
+                hi = self._read8_fast(pc + 2)
+                return_address = (pc + 3) & 0xFFFF
+                self._write8_direct_fast(sp_high, (return_address >> 8) & 0xFF)
+                self._write8_direct_fast(sp_low, return_address & 0xFF)
+                self.sp = sp_low
+                self.pc = lo | (hi << 8)
+                self._add_cycles(24)
+                return 24
+        if opcode == 0xC9 and self._can_batch_direct_memory_cycles():
+            sp = self.sp
+            sp_next = (sp + 1) & 0xFFFF
+            if self._is_direct_fast_address(sp) and self._is_direct_fast_address(sp_next):
+                lo = self._read8_direct_fast(sp)
+                hi = self._read8_direct_fast(sp_next)
+                if lo is not None and hi is not None:
+                    self.sp = (sp + 2) & 0xFFFF
+                    self.pc = lo | (hi << 8)
+                    self._add_cycles(16)
+                    return 16
+
+        if opcode == 0xA7:
+            self.f = (FLAG_Z if self.a == 0 else 0) | FLAG_H
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x6F:
+            self.l = self.a
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode in {0xE6, 0xFE} and pc <= 0x7FFE and self._can_batch_direct_memory_cycles():
+            value = self._read8_fast(pc + 1)
+            if opcode == 0xE6:
+                self.a &= value
+                self.f = (FLAG_Z if self.a == 0 else 0) | FLAG_H
+            else:
+                result = self.a - value
+                self.f = (
+                    FLAG_N
+                    | (FLAG_Z if (result & 0xFF) == 0 else 0)
+                    | (FLAG_H if (self.a & 0x0F) < (value & 0x0F) else 0)
+                    | (FLAG_C if self.a < value else 0)
+                )
+            self.pc = (pc + 2) & 0xFFFF
+            self._add_cycles(8)
+            return 8
+        if opcode == 0x47:
+            self.b = self.a
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x67:
+            self.h = self.a
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode in {0x7E, 0x77} and self._can_batch_direct_memory_cycles():
+            address = (self.h << 8) | self.l
+            if opcode == 0x7E:
+                value = self._read8_direct_fast(address, 8)
+                if value is None:
+                    return self._execute_memory_exact_fast(opcode, pc)
+                self.a = value
+            elif not self._write8_direct_fast(address, self.a, 8):
+                return self._execute_memory_exact_fast(opcode, pc)
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(8)
+            return 8
+        if opcode == 0x3C:
+            value = self.a
+            result = (value + 1) & 0xFF
+            self.a = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x2C:
+            value = self.l
+            result = (value + 1) & 0xFF
+            self.l = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x21 and pc <= 0x7FFD and self._can_batch_direct_memory_cycles():
+            self.l = self._read8_fast(pc + 1)
+            self.h = self._read8_fast(pc + 2)
+            self.pc = (pc + 3) & 0xFFFF
+            self._add_cycles(12)
+            return 12
+        if opcode == 0xD1 and self._can_batch_direct_memory_cycles():
+            sp = self.sp
+            sp_next = (sp + 1) & 0xFFFF
+            if self._is_direct_fast_address(sp) and self._is_direct_fast_address(sp_next):
+                lo = self._read8_direct_fast(sp)
+                hi = self._read8_direct_fast(sp_next)
+                if lo is not None and hi is not None:
+                    self.sp = (sp + 2) & 0xFFFF
+                    self.d = hi
+                    self.e = lo
+                    self.pc = (pc + 1) & 0xFFFF
+                    self._add_cycles(12)
+                    return 12
+        if opcode == 0xC0:
+            if self.f & FLAG_Z:
+                if self._can_batch_direct_memory_cycles():
+                    self.pc = (pc + 1) & 0xFFFF
+                    self._add_cycles(8)
+                    return 8
+            elif self._can_batch_direct_memory_cycles():
+                sp = self.sp
+                sp_next = (sp + 1) & 0xFFFF
+                if self._is_direct_fast_address(sp) and self._is_direct_fast_address(sp_next):
+                    lo = self._read8_direct_fast(sp)
+                    hi = self._read8_direct_fast(sp_next)
+                    if lo is not None and hi is not None:
+                        self.sp = (sp + 2) & 0xFFFF
+                        self.pc = lo | (hi << 8)
+                        self._add_cycles(20)
+                        return 20
+        if opcode == 0x5F:
+            self.e = self.a
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x78:
+            self.a = self.b
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x7A:
+            self.a = self.d
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x7B:
+            self.a = self.e
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x43:
+            self.b = self.e
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x58:
+            self.e = self.b
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0xAF:
+            self.a = 0
+            self.f = FLAG_Z
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x07:
+            carry = (self.a >> 7) & 1
+            self.a = ((self.a << 1) | carry) & 0xFF
+            self.f = FLAG_C if carry else 0
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0xB3:
+            self.a |= self.e
+            self.f = FLAG_Z if self.a == 0 else 0
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x3C:
+            value = self.a
+            result = (value + 1) & 0xFF
+            self.a = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x2C:
+            value = self.l
+            result = (value + 1) & 0xFF
+            self.l = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x24:
+            value = self.h
+            result = (value + 1) & 0xFF
+            self.h = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x3D:
+            value = self.a
+            result = (value - 1) & 0xFF
+            self.a = result
+            self.f = (
+                (self.f & FLAG_C)
+                | FLAG_N
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x00 else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0xB8:
+            value = self.b
+            result = self.a - value
+            self.f = (
+                FLAG_N
+                | (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if (self.a & 0x0F) < (value & 0x0F) else 0)
+                | (FLAG_C if self.a < value else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0xBD:
+            value = self.l
+            result = self.a - value
+            self.f = (
+                FLAG_N
+                | (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if (self.a & 0x0F) < (value & 0x0F) else 0)
+                | (FLAG_C if self.a < value else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x85:
+            value = self.l
+            result = self.a + value
+            self.f = (
+                (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if ((self.a & 0x0F) + (value & 0x0F)) > 0x0F else 0)
+                | (FLAG_C if result > 0xFF else 0)
+            )
+            self.a = result & 0xFF
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+
+        if opcode == 0xB1:
+            self.a |= self.c
+            self.f = FLAG_Z if self.a == 0 else 0
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x5D:
+            self.e = self.l
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x79:
+            self.a = self.c
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x7C:
+            self.a = self.h
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x4F:
+            self.c = self.a
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x0D:
+            value = self.c
+            result = (value - 1) & 0xFF
+            self.c = result
+            self.f = (
+                (self.f & FLAG_C)
+                | FLAG_N
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x00 else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x0C:
+            value = self.c
+            result = (value + 1) & 0xFF
+            self.c = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x57:
+            self.d = self.a
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0xB2:
+            self.a |= self.d
+            self.f = FLAG_Z if self.a == 0 else 0
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x7D:
+            self.a = self.l
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x87:
+            value = self.a
+            result = value + value
+            self.a = result & 0xFF
+            self.f = (
+                (FLAG_Z if self.a == 0 else 0)
+                | (FLAG_H if ((value & 0x0F) + (value & 0x0F)) > 0x0F else 0)
+                | (FLAG_C if result > 0xFF else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x05:
+            value = self.b
+            result = (value - 1) & 0xFF
+            self.b = result
+            self.f = (
+                (self.f & FLAG_C)
+                | FLAG_N
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x00 else 0)
+            )
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x54:
+            self.d = self.h
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0xA8:
+            self.a ^= self.b
+            self.f = FLAG_Z if self.a == 0 else 0
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x53:
+            self.d = self.e
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0x2F:
+            self.f = (self.f & (FLAG_Z | FLAG_C)) | FLAG_N | FLAG_H
+            self.a ^= 0xFF
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0xB0:
+            self.a |= self.b
+            self.f = FLAG_Z if self.a == 0 else 0
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(4)
+            return 4
+        if opcode == 0xE9:
+            self.pc = (self.h << 8) | self.l
+            self._add_cycles(4)
+            return 4
+
+        can_batch = self._can_batch_direct_memory_cycles()
+        bus = self.bus
+        if opcode == 0xCB and pc <= 0x7FFE:
+            cb = self._read8_fast(pc + 1)
+            if can_batch:
+                cycles = self._execute_cb_fast_register(cb)
+                if cycles:
+                    self.pc = (pc + 2) & 0xFFFF
+                    self._add_cycles(cycles)
+                    return cycles
+            if cb & 0x07 == 0x06:
+                cycles = self._execute_cb_fast_hl(cb, pc)
+                if cycles:
+                    return cycles
+
+        if opcode == 0xFA and pc <= 0x7FFD:
+            lo = self._read8_fast(pc + 1)
+            hi = self._read8_fast(pc + 2)
+            address = lo | (hi << 8)
+            value = self._read8_direct_fast(address, 16) if can_batch else None
+            if value is not None:
+                self.a = value
+                self.pc = (pc + 3) & 0xFFFF
+                self._add_cycles(16)
+                return 16
+            self._add_cycles(12)
+            self.pc = (pc + 3) & 0xFFFF
+            self.a = bus.read8(address)
+            self._add_cycles(4)
+            return 16
+
+        if opcode == 0xEA and pc <= 0x7FFD:
+            lo = self._read8_fast(pc + 1)
+            hi = self._read8_fast(pc + 2)
+            address = lo | (hi << 8)
+            if can_batch and self._write8_direct_fast(address, self.a, 16):
+                self.pc = (pc + 3) & 0xFFFF
+                self._add_cycles(16)
+                return 16
+            self._add_cycles(12)
+            self.pc = (pc + 3) & 0xFFFF
+            bus.write8(address, self.a)
+            self._add_cycles(4)
+            return 16
+        if opcode == 0xCD and can_batch and pc <= 0x7FFD:
+            sp_high = (self.sp - 1) & 0xFFFF
+            sp_low = (self.sp - 2) & 0xFFFF
+            if self._is_direct_fast_address(sp_high) and self._is_direct_fast_address(sp_low):
+                lo = self._read8_fast(pc + 1)
+                hi = self._read8_fast(pc + 2)
+                return_address = (pc + 3) & 0xFFFF
+                self._write8_direct_fast(sp_high, (return_address >> 8) & 0xFF)
+                self._write8_direct_fast(sp_low, return_address & 0xFF)
+                self.sp = sp_low
+                self.pc = lo | (hi << 8)
+                self._add_cycles(24)
+                return 24
+        if opcode == 0xC9 and can_batch:
+            sp = self.sp
+            sp_next = (sp + 1) & 0xFFFF
+            if self._is_direct_fast_address(sp) and self._is_direct_fast_address(sp_next):
+                lo = self._read8_direct_fast(sp)
+                hi = self._read8_direct_fast(sp_next)
+                if lo is not None and hi is not None:
+                    self.sp = (sp + 2) & 0xFFFF
+                    self.pc = lo | (hi << 8)
+                    self._add_cycles(16)
+                    return 16
+        if opcode == 0xC0:
+            if self.f & FLAG_Z:
+                if can_batch:
+                    self.pc = (pc + 1) & 0xFFFF
+                    self._add_cycles(8)
+                    return 8
+                return 0
+            if can_batch:
+                sp = self.sp
+                sp_next = (sp + 1) & 0xFFFF
+                if self._is_direct_fast_address(sp) and self._is_direct_fast_address(sp_next):
+                    lo = self._read8_direct_fast(sp)
+                    hi = self._read8_direct_fast(sp_next)
+                    if lo is not None and hi is not None:
+                        self.sp = (sp + 2) & 0xFFFF
+                        self.pc = lo | (hi << 8)
+                        self._add_cycles(20)
+                        return 20
+        if opcode == 0xD1 and can_batch:
+            sp = self.sp
+            sp_next = (sp + 1) & 0xFFFF
+            if self._is_direct_fast_address(sp) and self._is_direct_fast_address(sp_next):
+                lo = self._read8_direct_fast(sp)
+                hi = self._read8_direct_fast(sp_next)
+                if lo is not None and hi is not None:
+                    self.sp = (sp + 2) & 0xFFFF
+                    self.d = hi
+                    self.e = lo
+                    self.pc = (pc + 1) & 0xFFFF
+                    self._add_cycles(12)
+                    return 12
+
+        if opcode in {0xC1, 0xE1, 0xF1} and can_batch:
+            sp = self.sp
+            sp_next = (sp + 1) & 0xFFFF
+            if self._is_direct_fast_address(sp) and self._is_direct_fast_address(sp_next):
+                lo = self._read8_direct_fast(sp)
+                hi = self._read8_direct_fast(sp_next)
+                if lo is not None and hi is not None:
+                    self.sp = (sp + 2) & 0xFFFF
+                    if opcode == 0xC1:
+                        self.b = hi
+                        self.c = lo
+                    elif opcode == 0xE1:
+                        self.h = hi
+                        self.l = lo
+                    else:
+                        self.a = hi
+                        self.f = lo & 0xF0
+                    self.pc = (pc + 1) & 0xFFFF
+                    self._add_cycles(12)
+                    return 12
+        if opcode in {0xC5, 0xD5, 0xE5, 0xF5} and can_batch:
+            sp_high = (self.sp - 1) & 0xFFFF
+            sp_low = (self.sp - 2) & 0xFFFF
+            if self._is_direct_fast_address(sp_high) and self._is_direct_fast_address(sp_low):
+                if opcode == 0xC5:
+                    hi = self.b
+                    lo = self.c
+                elif opcode == 0xD5:
+                    hi = self.d
+                    lo = self.e
+                elif opcode == 0xE5:
+                    hi = self.h
+                    lo = self.l
+                else:
+                    hi = self.a
+                    lo = self.f & 0xF0
+                self._write8_direct_fast(sp_high, hi)
+                self._write8_direct_fast(sp_low, lo)
+                self.sp = sp_low
+                self.pc = (pc + 1) & 0xFFFF
+                self._add_cycles(16)
+                return 16
+
+        if opcode == 0xC8:
+            if not self.f & FLAG_Z:
+                if can_batch:
+                    self.pc = (pc + 1) & 0xFFFF
+                    self._add_cycles(8)
+                    return 8
+                return 0
+            if can_batch:
+                sp = self.sp
+                sp_next = (sp + 1) & 0xFFFF
+                if self._is_direct_fast_address(sp) and self._is_direct_fast_address(sp_next):
+                    lo = self._read8_direct_fast(sp)
+                    hi = self._read8_direct_fast(sp_next)
+                    if lo is not None and hi is not None:
+                        self.sp = (sp + 2) & 0xFFFF
+                        self.pc = lo | (hi << 8)
+                        self._add_cycles(20)
+                        return 20
+
+        if opcode in {0xC2, 0xCA, 0xC3} and can_batch and pc <= 0x7FFD:
+            lo = self._read8_fast(pc + 1)
+            hi = self._read8_fast(pc + 2)
+            address = lo | (hi << 8)
+            taken = (
+                opcode == 0xC3
+                or (opcode == 0xC2 and not self.f & FLAG_Z)
+                or (opcode == 0xCA and self.f & FLAG_Z)
+            )
+            self.pc = address if taken else (pc + 3) & 0xFFFF
+            cycles = 16 if taken else 12
+            self._add_cycles(cycles)
+            return cycles
+
+        if opcode == 0xF9 and can_batch:
+            self.sp = (self.h << 8) | self.l
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(8)
+            return 8
+
+        if opcode in {0x20, 0x28, 0x30, 0x38, 0x18} and can_batch and pc <= 0x7FFE:
+            offset = self._read8_fast(pc + 1)
+            next_pc = (pc + 2) & 0xFFFF
+            taken = (
+                opcode == 0x18
+                or (opcode == 0x20 and not self.f & FLAG_Z)
+                or (opcode == 0x28 and self.f & FLAG_Z)
+                or (opcode == 0x30 and not self.f & FLAG_C)
+                or (opcode == 0x38 and self.f & FLAG_C)
+            )
+            self.pc = (
+                (next_pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                if taken
+                else next_pc
+            )
+            cycles = 12 if taken else 8
+            self._add_cycles(cycles)
+            return cycles
+
+        if opcode in {0xF0, 0xE0} and pc <= 0x7FFE:
+            offset = self._read8_fast(pc + 1)
+            address = 0xFF00 | offset
+            self._add_cycles(8)
+            self.pc = (pc + 2) & 0xFFFF
+            if opcode == 0xF0:
+                self.a = bus.read8(address)
+            else:
+                bus.write8(address, self.a)
+            self._add_cycles(4)
+            return 12
+
+        if opcode in {0xE6, 0xFE, 0xC6, 0x0E, 0x3E, 0x06, 0x16, 0x1E, 0x26, 0xF8} and can_batch and pc <= 0x7FFE:
+            value = self._read8_fast(pc + 1)
+            if opcode == 0xE6:
+                self.a &= value
+                self.f = (FLAG_Z if self.a == 0 else 0) | FLAG_H
+            elif opcode == 0xFE:
+                result = self.a - value
+                self.f = (
+                    FLAG_N
+                    | (FLAG_Z if (result & 0xFF) == 0 else 0)
+                    | (FLAG_H if (self.a & 0x0F) < (value & 0x0F) else 0)
+                    | (FLAG_C if self.a < value else 0)
+                )
+            elif opcode == 0xC6:
+                result = self.a + value
+                self.f = (
+                    (FLAG_Z if (result & 0xFF) == 0 else 0)
+                    | (FLAG_H if ((self.a & 0x0F) + (value & 0x0F)) > 0x0F else 0)
+                    | (FLAG_C if result > 0xFF else 0)
+                )
+                self.a = result & 0xFF
+            elif opcode == 0x0E:
+                self.c = value
+            elif opcode == 0x3E:
+                self.a = value
+            elif opcode == 0x06:
+                self.b = value
+            elif opcode == 0x16:
+                self.d = value
+            elif opcode == 0x1E:
+                self.e = value
+            elif opcode == 0x26:
+                self.h = value
+            else:
+                sp = self.sp
+                offset = value - 0x100 if value & 0x80 else value
+                result = (sp + offset) & 0xFFFF
+                self.h = (result >> 8) & 0xFF
+                self.l = result & 0xFF
+                self.f = (
+                    (FLAG_H if ((sp & 0x0F) + (value & 0x0F)) > 0x0F else 0)
+                    | (FLAG_C if ((sp & 0xFF) + value) > 0xFF else 0)
+                )
+            self.pc = (pc + 2) & 0xFFFF
+            self._add_cycles(8)
+            cycles = 12 if opcode == 0xF8 else 8
+            if cycles == 12:
+                self._add_cycles(4)
+            return cycles
+
+        if opcode == 0x21 and can_batch and pc <= 0x7FFD:
+            self.l = self._read8_fast(pc + 1)
+            self.h = self._read8_fast(pc + 2)
+            self.pc = (pc + 3) & 0xFFFF
+            self._add_cycles(12)
+            return 12
+
+        if opcode in {0x01, 0x11} and can_batch and pc <= 0x7FFD:
+            lo = self._read8_fast(pc + 1)
+            hi = self._read8_fast(pc + 2)
+            if opcode == 0x01:
+                self.b = hi
+                self.c = lo
+            else:
+                self.d = hi
+                self.e = lo
+            self.pc = (pc + 3) & 0xFFFF
+            self._add_cycles(12)
+            return 12
+
+        if opcode in {0x7E, 0x77, 0x72, 0x73, 0x22, 0x12, 0x1A, 0x2A, 0x0A, 0x32, 0x56, 0x35} and can_batch:
+            address = (self.h << 8) | self.l
+            if opcode in {0x12, 0x1A}:
+                address = (self.d << 8) | self.e
+            elif opcode == 0x0A:
+                address = (self.b << 8) | self.c
+            if opcode in {0x7E, 0x1A, 0x2A, 0x0A, 0x56}:
+                value = self._read8_direct_fast(address, 8)
+                if value is None:
+                    return self._execute_memory_exact_fast(opcode, pc)
+                if opcode == 0x56:
+                    self.d = value
+                else:
+                    self.a = value
+                if opcode == 0x2A:
+                    address = (address + 1) & 0xFFFF
+                    self.h = (address >> 8) & 0xFF
+                    self.l = address & 0xFF
+            elif opcode == 0x35:
+                value = self._read8_direct_fast(address, 12)
+                if value is None:
+                    return self._execute_memory_exact_fast(opcode, pc)
+                result = (value - 1) & 0xFF
+                if not self._write8_direct_fast(address, result, 12):
+                    return self._execute_memory_exact_fast(opcode, pc)
+                self.f = (
+                    (self.f & FLAG_C)
+                    | FLAG_N
+                    | (FLAG_Z if result == 0 else 0)
+                    | (FLAG_H if (value & 0x0F) == 0x00 else 0)
+                )
+            else:
+                value = self.a
+                if opcode == 0x72:
+                    value = self.d
+                elif opcode == 0x73:
+                    value = self.e
+                if not self._write8_direct_fast(address, value, 8):
+                    return self._execute_memory_exact_fast(opcode, pc)
+                if opcode == 0x22:
+                    address = (address + 1) & 0xFFFF
+                    self.h = (address >> 8) & 0xFF
+                    self.l = address & 0xFF
+                elif opcode == 0x32:
+                    address = (address - 1) & 0xFFFF
+                    self.h = (address >> 8) & 0xFF
+                    self.l = address & 0xFF
+            self.pc = (pc + 1) & 0xFFFF
+            cycles = 12 if opcode == 0x35 else 8
+            self._add_cycles(cycles)
+            return cycles
+
+        if opcode in {0x7E, 0x77, 0x72, 0x73, 0x22, 0x12, 0x1A, 0x2A, 0x0A, 0x32, 0x56, 0x35, 0x3A, 0x5E, 0x6E, 0x46, 0x70, 0x86, 0xA6, 0xB6, 0x34}:
+            return self._execute_memory_exact_fast(opcode, pc)
+
+        if opcode in {0x0B, 0x1B, 0x09, 0x19, 0x13, 0x23} and can_batch:
+            if opcode == 0x0B:
+                value = ((self.b << 8) | self.c) - 1
+                self.b = (value >> 8) & 0xFF
+                self.c = value & 0xFF
+            elif opcode == 0x1B:
+                value = ((self.d << 8) | self.e) - 1
+                self.d = (value >> 8) & 0xFF
+                self.e = value & 0xFF
+            elif opcode == 0x09:
+                hl = (self.h << 8) | self.l
+                value = (self.b << 8) | self.c
+                result = hl + value
+                self.f = (
+                    (self.f & FLAG_Z)
+                    | (FLAG_H if ((hl & 0x0FFF) + (value & 0x0FFF)) > 0x0FFF else 0)
+                    | (FLAG_C if result > 0xFFFF else 0)
+                )
+                self.h = (result >> 8) & 0xFF
+                self.l = result & 0xFF
+            elif opcode == 0x19:
+                hl = (self.h << 8) | self.l
+                value = (self.d << 8) | self.e
+                result = hl + value
+                self.f = (
+                    (self.f & FLAG_Z)
+                    | (FLAG_H if ((hl & 0x0FFF) + (value & 0x0FFF)) > 0x0FFF else 0)
+                    | (FLAG_C if result > 0xFFFF else 0)
+                )
+                self.h = (result >> 8) & 0xFF
+                self.l = result & 0xFF
+            elif opcode == 0x13:
+                value = ((self.d << 8) | self.e) + 1
+                self.d = (value >> 8) & 0xFF
+                self.e = value & 0xFF
+            else:
+                value = ((self.h << 8) | self.l) + 1
+                self.h = (value >> 8) & 0xFF
+                self.l = value & 0xFF
+            self.pc = (pc + 1) & 0xFFFF
+            self._add_cycles(8)
+            return 8
+
+        return 0
+
+    def _execute_memory_exact_fast(self, opcode: int, pc: int) -> int:
+        address = (self.h << 8) | self.l
+        if opcode in {0x12, 0x1A}:
+            address = (self.d << 8) | self.e
+        elif opcode == 0x0A:
+            address = (self.b << 8) | self.c
+
+        self.pc = (pc + 1) & 0xFFFF
+        self._add_cycles(4)
+
+        if opcode in {0x7E, 0x1A, 0x2A, 0x0A, 0x3A, 0x56, 0x5E, 0x6E, 0x46, 0x86, 0xA6, 0xB6}:
+            value = self.bus.read8(address)
+            self._add_cycles(4)
+            if opcode in {0x7E, 0x1A, 0x2A, 0x0A, 0x3A}:
+                self.a = value
+                if opcode == 0x2A:
+                    address = (address + 1) & 0xFFFF
+                    self.h = (address >> 8) & 0xFF
+                    self.l = address & 0xFF
+                elif opcode == 0x3A:
+                    address = (address - 1) & 0xFFFF
+                    self.h = (address >> 8) & 0xFF
+                    self.l = address & 0xFF
+            elif opcode == 0x56:
+                self.d = value
+            elif opcode == 0x5E:
+                self.e = value
+            elif opcode == 0x6E:
+                self.l = value
+            elif opcode == 0x46:
+                self.b = value
+            elif opcode == 0x86:
+                result = self.a + value
+                self.f = (
+                    (FLAG_Z if (result & 0xFF) == 0 else 0)
+                    | (FLAG_H if ((self.a & 0x0F) + (value & 0x0F)) > 0x0F else 0)
+                    | (FLAG_C if result > 0xFF else 0)
+                )
+                self.a = result & 0xFF
+            elif opcode == 0xA6:
+                self.a &= value
+                self.f = (FLAG_Z if self.a == 0 else 0) | FLAG_H
+            else:
+                self.a |= value
+                self.f = FLAG_Z if self.a == 0 else 0
+            return 8
+
+        if opcode == 0x35:
+            value = self.bus.read8(address)
+            self._add_cycles(4)
+            result = (value - 1) & 0xFF
+            self.bus.write8(address, result)
+            self._add_cycles(4)
+            self.f = (
+                (self.f & FLAG_C)
+                | FLAG_N
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x00 else 0)
+            )
+            return 12
+
+        if opcode == 0x34:
+            value = self.bus.read8(address)
+            self._add_cycles(4)
+            result = (value + 1) & 0xFF
+            self.bus.write8(address, result)
+            self._add_cycles(4)
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            return 12
+
+        value = self.a
+        if opcode == 0x72:
+            value = self.d
+        elif opcode == 0x73:
+            value = self.e
+        elif opcode == 0x70:
+            value = self.b
+        self.bus.write8(address, value)
+        self._add_cycles(4)
+        if opcode == 0x22:
+            address = (address + 1) & 0xFFFF
+            self.h = (address >> 8) & 0xFF
+            self.l = address & 0xFF
+        elif opcode == 0x32:
+            address = (address - 1) & 0xFFFF
+            self.h = (address >> 8) & 0xFF
+            self.l = address & 0xFF
+        return 8
+
+    def _execute_cb_fast_hl(self, opcode: int, pc: int) -> int:
+        address = (self.h << 8) | self.l
+        self.pc = (pc + 2) & 0xFFFF
+        self._add_cycles(8)
+        value = self.bus.read8(address)
+        self._add_cycles(4)
+        if opcode < 0x40:
+            result = self._cb_rotate_shift((opcode >> 3) & 0x07, value)
+            self.bus.write8(address, result)
+            self._add_cycles(4)
+            return 16
+        bit = (opcode >> 3) & 0x07
+        if opcode < 0x80:
+            self.f = (
+                (self.f & FLAG_C)
+                | FLAG_H
+                | (FLAG_Z if (value & (1 << bit)) == 0 else 0)
+            )
+            return 12
+        if opcode < 0xC0:
+            result = value & ~(1 << bit)
+        else:
+            result = value | (1 << bit)
+        self.bus.write8(address, result)
+        self._add_cycles(4)
+        return 16
+
+    def _execute_cb_fast_register(self, opcode: int) -> int:
+        if opcode == 0x3F:
+            carry = self.a & 1
+            self.a >>= 1
+            self.f = (FLAG_Z if self.a == 0 else 0) | (FLAG_C if carry else 0)
+            return 8
+        if opcode == 0x41:
+            self.f = (self.f & FLAG_C) | FLAG_H | (FLAG_Z if not self.c & 0x01 else 0)
+            return 8
+        if opcode == 0x43:
+            self.f = (self.f & FLAG_C) | FLAG_H | (FLAG_Z if not self.e & 0x01 else 0)
+            return 8
+        if opcode == 0x37:
+            self.a = ((self.a & 0x0F) << 4) | (self.a >> 4)
+            self.f = FLAG_Z if self.a == 0 else 0
+            return 8
+        if opcode == 0x0B:
+            carry = self.e & 1
+            self.e = ((carry << 7) | (self.e >> 1)) & 0xFF
+            self.f = (FLAG_Z if self.e == 0 else 0) | (FLAG_C if carry else 0)
+            return 8
+        if opcode == 0x23:
+            carry = (self.e >> 7) & 1
+            self.e = (self.e << 1) & 0xFF
+            self.f = (FLAG_Z if self.e == 0 else 0) | (FLAG_C if carry else 0)
+            return 8
+        if opcode == 0x33:
+            self.e = ((self.e & 0x0F) << 4) | (self.e >> 4)
+            self.f = FLAG_Z if self.e == 0 else 0
+            return 8
+        index = opcode & 0x07
+        if index == 6:
+            return 0
+        value = self._get_r8(index)
+        if opcode < 0x40:
+            operation = (opcode >> 3) & 0x07
+            self._set_r8(index, self._cb_rotate_shift(operation, value))
+            return 8
+        bit = (opcode >> 3) & 0x07
+        if opcode < 0x80:
+            self.f = (
+                (self.f & FLAG_C)
+                | FLAG_H
+                | (FLAG_Z if (value & (1 << bit)) == 0 else 0)
+            )
+            return 8
+        if opcode < 0xC0:
+            self._set_r8(index, value & ~(1 << bit))
+            return 8
+        self._set_r8(index, value | (1 << bit))
+        return 8
+        return 0
+
     def _execute_opcode(self, opcode: int) -> int:
         if opcode in INVALID_OPCODES:
             raise IllegalInstruction(f"Illegal opcode ${opcode:02X} at ${self.pc - 1:04X}")
+
+        if opcode == 0xFA:
+            pc = self.pc
+            bus = self.bus
+            if pc <= 0x7FFE and self._can_batch_direct_memory_cycles():
+                lo = bus.read8(pc)
+                hi = bus.read8(pc + 1)
+                value = self._read8_direct_fast(lo | (hi << 8), 12)
+                if value is not None:
+                    self.pc = (pc + 2) & 0xFFFF
+                    self.a = value
+                    self._add_cycles(12)
+                    return 16
+            lo = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            hi = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            address = lo | (hi << 8)
+            bus = self.bus
+            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
+                self.a = bus.wram[address - 0xC000]
+            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
+                self.a = bus.wram[address - 0xE000]
+            elif 0xFF80 <= address <= 0xFFFE:
+                self.a = bus.hram[address - 0xFF80]
+            else:
+                self.a = bus.read8(address)
+            self._add_cycles(4)
+            return 16
+        if opcode == 0xEA:
+            pc = self.pc
+            bus = self.bus
+            if pc <= 0x7FFE and self._can_batch_direct_memory_cycles():
+                lo = bus.read8(pc)
+                hi = bus.read8(pc + 1)
+                address = lo | (hi << 8)
+                if self._write8_direct_fast(address, self.a, 12):
+                    self.pc = (pc + 2) & 0xFFFF
+                    self._add_cycles(12)
+                    return 16
+            lo = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            hi = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            address = lo | (hi << 8)
+            bus = self.bus
+            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
+                bus.wram[address - 0xC000] = self.a
+            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
+                bus.wram[address - 0xE000] = self.a
+            elif 0xFF80 <= address <= 0xFFFE:
+                bus.hram[address - 0xFF80] = self.a
+            else:
+                bus.write8(address, self.a)
+            self._add_cycles(4)
+            return 16
+        if opcode == 0x20:
+            pc = self.pc
+            if pc <= 0x7FFF and self._can_batch_direct_memory_cycles():
+                offset = self.bus.read8(pc)
+                self.pc = (pc + 1) & 0xFFFF
+                if not self.f & FLAG_Z:
+                    self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                    self._add_cycles(8)
+                    return 12
+                self._add_cycles(4)
+                return 8
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            if not self.f & FLAG_Z:
+                self._internal_cycle()
+                self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                return 12
+            return 8
+        if opcode == 0x28:
+            pc = self.pc
+            if pc <= 0x7FFF and self._can_batch_direct_memory_cycles():
+                offset = self.bus.read8(pc)
+                self.pc = (pc + 1) & 0xFFFF
+                if self.f & FLAG_Z:
+                    self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                    self._add_cycles(8)
+                    return 12
+                self._add_cycles(4)
+                return 8
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            if self.f & FLAG_Z:
+                self._internal_cycle()
+                self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                return 12
+            return 8
+        if opcode == 0xCD:
+            pc = self.pc
+            sp_high = (self.sp - 1) & 0xFFFF
+            sp_low = (self.sp - 2) & 0xFFFF
+            if (
+                pc <= 0x7FFE
+                and self._can_batch_direct_memory_cycles()
+                and self._is_direct_fast_address(sp_high)
+                and self._is_direct_fast_address(sp_low)
+            ):
+                lo = self.bus.read8(pc)
+                hi = self.bus.read8(pc + 1)
+                self._write8_direct_fast(sp_high, (pc + 2) >> 8)
+                self._write8_direct_fast(sp_low, (pc + 2) & 0xFF)
+                self.sp = sp_low
+                self.pc = lo | (hi << 8)
+                self._add_cycles(20)
+                return 24
+            lo = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            hi = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            address = lo | (hi << 8)
+            self._internal_cycle()
+            self.sp = (self.sp - 1) & 0xFFFF
+            self._write8_fast(self.sp, (self.pc >> 8) & 0xFF)
+            self._add_cycles(4)
+            self.sp = (self.sp - 1) & 0xFFFF
+            self._write8_fast(self.sp, self.pc & 0xFF)
+            self._add_cycles(4)
+            self.pc = address
+            return 24
+        if opcode == 0xCB:
+            return self._execute_cb(self._fetch8())
+        if opcode == 0xA7:
+            self.f = (FLAG_Z if self.a == 0 else 0) | FLAG_H
+            return 4
+        if opcode == 0x6F:
+            self.l = self.a
+            return 4
+        if opcode == 0xC9:
+            sp = self.sp
+            sp_next = (sp + 1) & 0xFFFF
+            if (
+                self._can_batch_direct_memory_cycles()
+                and self._is_direct_fast_address(sp)
+                and self._is_direct_fast_address(sp_next)
+            ):
+                lo = self._read8_direct_fast(sp)
+                hi = self._read8_direct_fast(sp_next)
+                self.sp = (sp + 2) & 0xFFFF
+                self.pc = (lo or 0) | ((hi or 0) << 8)
+                self._add_cycles(12)
+                return 16
+            lo = self._read8_fast(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            hi = self._read8_fast(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            self.pc = lo | (hi << 8)
+            self._internal_cycle()
+            return 16
+        if opcode == 0xC0:
+            if not self.f & FLAG_Z:
+                sp = self.sp
+                sp_next = (sp + 1) & 0xFFFF
+                if (
+                    self._can_batch_direct_memory_cycles()
+                    and self._is_direct_fast_address(sp)
+                    and self._is_direct_fast_address(sp_next)
+                ):
+                    lo = self._read8_direct_fast(sp)
+                    hi = self._read8_direct_fast(sp_next)
+                    self.sp = (sp + 2) & 0xFFFF
+                    self.pc = (lo or 0) | ((hi or 0) << 8)
+                    self._add_cycles(16)
+                    return 20
+            self._internal_cycle()
+            if not self.f & FLAG_Z:
+                lo = self._read8_fast(self.sp)
+                self._add_cycles(4)
+                self.sp = (self.sp + 1) & 0xFFFF
+                hi = self._read8_fast(self.sp)
+                self._add_cycles(4)
+                self.sp = (self.sp + 1) & 0xFFFF
+                self.pc = lo | (hi << 8)
+                self._internal_cycle()
+                return 20
+            return 8
+        if opcode == 0xD1:
+            sp = self.sp
+            sp_next = (sp + 1) & 0xFFFF
+            if (
+                self._can_batch_direct_memory_cycles()
+                and self._is_direct_fast_address(sp)
+                and self._is_direct_fast_address(sp_next)
+            ):
+                lo = self._read8_direct_fast(sp)
+                hi = self._read8_direct_fast(sp_next)
+                self.sp = (sp + 2) & 0xFFFF
+                self.d = hi or 0
+                self.e = lo or 0
+                self._add_cycles(8)
+                return 12
+            lo = self._read8_fast(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            hi = self._read8_fast(self.sp)
+            self._add_cycles(4)
+            self.sp = (self.sp + 1) & 0xFFFF
+            self.d = hi
+            self.e = lo
+            return 12
+        if opcode == 0xF0:
+            pc = self.pc
+            if pc <= 0x7FFF and self._can_batch_direct_memory_cycles():
+                offset = self.bus.read8(pc)
+                value = self._read8_direct_fast(0xFF00 + offset)
+                if value is not None:
+                    self.pc = (pc + 1) & 0xFFFF
+                    self.a = value
+                    self._add_cycles(8)
+                    return 12
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self.a = self._read8_fast(0xFF00 + offset)
+            self._add_cycles(4)
+            return 12
+        if opcode == 0xE0:
+            pc = self.pc
+            if pc <= 0x7FFF and self._can_batch_direct_memory_cycles():
+                offset = self.bus.read8(pc)
+                if self._is_direct_fast_address(0xFF00 + offset):
+                    self._write8_direct_fast(0xFF00 + offset, self.a)
+                    self.pc = (pc + 1) & 0xFFFF
+                    self._add_cycles(8)
+                    return 12
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self._write8_fast(0xFF00 + offset, self.a)
+            self._add_cycles(4)
+            return 12
+        if opcode == 0xE6:
+            self.a &= self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self.f = (FLAG_Z if self.a == 0 else 0) | FLAG_H
+            return 8
+        if opcode == 0x47:
+            self.b = self.a
+            return 4
+        if opcode == 0x67:
+            self.h = self.a
+            return 4
+        if opcode == 0x7E:
+            address = (self.h << 8) | self.l
+            bus = self.bus
+            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
+                self.a = bus.wram[address - 0xC000]
+            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
+                self.a = bus.wram[address - 0xE000]
+            elif 0xFF80 <= address <= 0xFFFE:
+                self.a = bus.hram[address - 0xFF80]
+            else:
+                self.a = bus.read8(address)
+            self._add_cycles(4)
+            return 8
+        if opcode == 0x3C:
+            value = self.a
+            result = (value + 1) & 0xFF
+            self.a = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            return 4
+        if opcode == 0x2C:
+            value = self.l
+            result = (value + 1) & 0xFF
+            self.l = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            return 4
+        if opcode == 0x5F:
+            self.e = self.a
+            return 4
+        if opcode == 0x30:
+            pc = self.pc
+            if pc <= 0x7FFF and self._can_batch_direct_memory_cycles():
+                offset = self.bus.read8(pc)
+                self.pc = (pc + 1) & 0xFFFF
+                if not self.f & FLAG_C:
+                    self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                    self._add_cycles(8)
+                    return 12
+                self._add_cycles(4)
+                return 8
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            if not self.f & FLAG_C:
+                self._internal_cycle()
+                self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                return 12
+            return 8
+        if opcode == 0x18:
+            pc = self.pc
+            if pc <= 0x7FFF and self._can_batch_direct_memory_cycles():
+                offset = self.bus.read8(pc)
+                self.pc = (pc + 1) & 0xFFFF
+                self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                self._add_cycles(8)
+                return 12
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self._internal_cycle()
+            self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+            return 12
+        if opcode == 0x3D:
+            value = self.a
+            result = (value - 1) & 0xFF
+            self.a = result
+            self.f = (
+                (self.f & FLAG_C)
+                | FLAG_N
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x00 else 0)
+            )
+            return 4
+        if opcode == 0xB8:
+            value = self.b
+            result = self.a - value
+            self.f = (
+                FLAG_N
+                | (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if (self.a & 0x0F) < (value & 0x0F) else 0)
+                | (FLAG_C if self.a < value else 0)
+            )
+            return 4
+        if opcode == 0xFE:
+            value = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            result = self.a - value
+            self.f = (
+                FLAG_N
+                | (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if (self.a & 0x0F) < (value & 0x0F) else 0)
+                | (FLAG_C if self.a < value else 0)
+            )
+            return 8
+        if opcode == 0x77:
+            address = (self.h << 8) | self.l
+            bus = self.bus
+            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
+                bus.wram[address - 0xC000] = self.a
+            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
+                bus.wram[address - 0xE000] = self.a
+            elif 0xFF80 <= address <= 0xFFFE:
+                bus.hram[address - 0xFF80] = self.a
+            else:
+                bus.write8(address, self.a)
+            self._add_cycles(4)
+            return 8
+        if opcode == 0x72:
+            address = (self.h << 8) | self.l
+            bus = self.bus
+            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
+                bus.wram[address - 0xC000] = self.d
+            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
+                bus.wram[address - 0xE000] = self.d
+            elif 0xFF80 <= address <= 0xFFFE:
+                bus.hram[address - 0xFF80] = self.d
+            else:
+                bus.write8(address, self.d)
+            self._add_cycles(4)
+            return 8
+        if opcode == 0x73:
+            address = (self.h << 8) | self.l
+            bus = self.bus
+            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
+                bus.wram[address - 0xC000] = self.e
+            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
+                bus.wram[address - 0xE000] = self.e
+            elif 0xFF80 <= address <= 0xFFFE:
+                bus.hram[address - 0xFF80] = self.e
+            else:
+                bus.write8(address, self.e)
+            self._add_cycles(4)
+            return 8
+        if opcode == 0x07:
+            carry = (self.a >> 7) & 1
+            self.a = ((self.a << 1) | carry) & 0xFF
+            self.f = FLAG_C if carry else 0
+            return 4
+        if opcode == 0x21:
+            pc = self.pc
+            if pc <= 0x7FFE and self._can_batch_direct_memory_cycles():
+                self.l = self.bus.read8(pc)
+                self.h = self.bus.read8(pc + 1)
+                self.pc = (pc + 2) & 0xFFFF
+                self._add_cycles(8)
+                return 12
+            self.l = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            self.h = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            return 12
+        if opcode == 0x38:
+            pc = self.pc
+            if pc <= 0x7FFF and self._can_batch_direct_memory_cycles():
+                offset = self.bus.read8(pc)
+                self.pc = (pc + 1) & 0xFFFF
+                if self.f & FLAG_C:
+                    self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                    self._add_cycles(8)
+                    return 12
+                self._add_cycles(4)
+                return 8
+            offset = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            if self.f & FLAG_C:
+                self._internal_cycle()
+                self.pc = (self.pc + (offset - 0x100 if offset & 0x80 else offset)) & 0xFFFF
+                return 12
+            return 8
+        if opcode == 0x22:
+            hl = (self.h << 8) | self.l
+            self._write8_fast(hl, self.a)
+            self._add_cycles(4)
+            hl = (hl + 1) & 0xFFFF
+            self.h = (hl >> 8) & 0xFF
+            self.l = hl & 0xFF
+            return 8
+        if opcode == 0x12:
+            self._write8_fast((self.d << 8) | self.e, self.a)
+            self._add_cycles(4)
+            return 8
+        if opcode == 0x1A:
+            self.a = self._read8_fast((self.d << 8) | self.e)
+            self._add_cycles(4)
+            return 8
+        if opcode == 0x2A:
+            hl = (self.h << 8) | self.l
+            self.a = self._read8_fast(hl)
+            self._add_cycles(4)
+            hl = (hl + 1) & 0xFFFF
+            self.h = (hl >> 8) & 0xFF
+            self.l = hl & 0xFF
+            return 8
+        if opcode == 0x0B:
+            self._internal_cycle()
+            value = ((self.b << 8) | self.c) - 1
+            self.b = (value >> 8) & 0xFF
+            self.c = value & 0xFF
+            return 8
+        if opcode == 0x1B:
+            self._internal_cycle()
+            value = ((self.d << 8) | self.e) - 1
+            self.d = (value >> 8) & 0xFF
+            self.e = value & 0xFF
+            return 8
+        if opcode == 0x09:
+            self._internal_cycle()
+            hl = (self.h << 8) | self.l
+            value = (self.b << 8) | self.c
+            result = hl + value
+            self.f = (
+                (self.f & FLAG_Z)
+                | (FLAG_H if ((hl & 0x0FFF) + (value & 0x0FFF)) > 0x0FFF else 0)
+                | (FLAG_C if result > 0xFFFF else 0)
+            )
+            self.h = (result >> 8) & 0xFF
+            self.l = result & 0xFF
+            return 8
+        if opcode == 0x19:
+            self._internal_cycle()
+            hl = (self.h << 8) | self.l
+            value = (self.d << 8) | self.e
+            result = hl + value
+            self.f = (
+                (self.f & FLAG_Z)
+                | (FLAG_H if ((hl & 0x0FFF) + (value & 0x0FFF)) > 0x0FFF else 0)
+                | (FLAG_C if result > 0xFFFF else 0)
+            )
+            self.h = (result >> 8) & 0xFF
+            self.l = result & 0xFF
+            return 8
+        if opcode == 0x13:
+            self._internal_cycle()
+            value = ((self.d << 8) | self.e) + 1
+            self.d = (value >> 8) & 0xFF
+            self.e = value & 0xFF
+            return 8
+        if opcode == 0x23:
+            self._internal_cycle()
+            value = ((self.h << 8) | self.l) + 1
+            self.h = (value >> 8) & 0xFF
+            self.l = value & 0xFF
+            return 8
+        if opcode == 0x0E:
+            self.c = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            return 8
+        if opcode == 0x3E:
+            self.a = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            return 8
+        if opcode == 0xC6:
+            value = self.bus.read8(self.pc)
+            self._add_cycles(4)
+            self.pc = (self.pc + 1) & 0xFFFF
+            result = self.a + value
+            self.f = (
+                (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if ((self.a & 0x0F) + (value & 0x0F)) > 0x0F else 0)
+                | (FLAG_C if result > 0xFF else 0)
+            )
+            self.a = result & 0xFF
+            return 8
+        if opcode == 0xB3:
+            self.a |= self.e
+            self.f = FLAG_Z if self.a == 0 else 0
+            return 4
+        if opcode == 0x78:
+            self.a = self.b
+            return 4
+        if opcode == 0x7A:
+            self.a = self.d
+            return 4
+        if opcode == 0x7B:
+            self.a = self.e
+            return 4
+        if opcode == 0x43:
+            self.b = self.e
+            return 4
+        if opcode == 0x58:
+            self.e = self.b
+            return 4
+        if opcode == 0xAF:
+            self.a = 0
+            self.f = FLAG_Z
+            return 4
+        if opcode == 0xBD:
+            value = self.l
+            result = self.a - value
+            self.f = (
+                FLAG_N
+                | (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if (self.a & 0x0F) < (value & 0x0F) else 0)
+                | (FLAG_C if self.a < value else 0)
+            )
+            return 4
+        if opcode == 0x24:
+            value = self.h
+            result = (value + 1) & 0xFF
+            self.h = result
+            self.f = (
+                (self.f & FLAG_C)
+                | (FLAG_Z if result == 0 else 0)
+                | (FLAG_H if (value & 0x0F) == 0x0F else 0)
+            )
+            return 4
+        if opcode == 0x85:
+            value = self.l
+            result = self.a + value
+            self.f = (
+                (FLAG_Z if (result & 0xFF) == 0 else 0)
+                | (FLAG_H if ((self.a & 0x0F) + (value & 0x0F)) > 0x0F else 0)
+                | (FLAG_C if result > 0xFF else 0)
+            )
+            self.a = result & 0xFF
+            return 4
 
         if opcode == 0x00:
             return 4
@@ -958,6 +3046,36 @@ class CPU:
         raise NotImplementedError(f"Opcode ${opcode:02X} at ${self.pc - 1:04X} was not decoded")
 
     def _execute_cb(self, opcode: int) -> int:
+        if opcode == 0x3F:
+            carry = self.a & 1
+            self.a >>= 1
+            self.f = (FLAG_Z if self.a == 0 else 0) | (FLAG_C if carry else 0)
+            return 8
+        if opcode == 0x41:
+            self.f = (self.f & FLAG_C) | FLAG_H | (FLAG_Z if not self.c & 0x01 else 0)
+            return 8
+        if opcode == 0x43:
+            self.f = (self.f & FLAG_C) | FLAG_H | (FLAG_Z if not self.e & 0x01 else 0)
+            return 8
+        if opcode == 0x37:
+            self.a = ((self.a & 0x0F) << 4) | (self.a >> 4)
+            self.f = FLAG_Z if self.a == 0 else 0
+            return 8
+        if opcode == 0x0B:
+            carry = self.e & 1
+            self.e = ((carry << 7) | (self.e >> 1)) & 0xFF
+            self.f = (FLAG_Z if self.e == 0 else 0) | (FLAG_C if carry else 0)
+            return 8
+        if opcode == 0x23:
+            carry = (self.e >> 7) & 1
+            self.e = (self.e << 1) & 0xFF
+            self.f = (FLAG_Z if self.e == 0 else 0) | (FLAG_C if carry else 0)
+            return 8
+        if opcode == 0x33:
+            self.e = ((self.e & 0x0F) << 4) | (self.e >> 4)
+            self.f = FLAG_Z if self.e == 0 else 0
+            return 8
+
         index = opcode & 0x07
         value = self._get_r8(index)
         if opcode < 0x40:
@@ -1276,7 +3394,12 @@ class CPU:
             self.halted = False
         if not self.ime or not pending:
             return 0
+        return self._service_interrupt_pending(pending)
+
+    def _service_interrupt_pending(self, pending: int) -> int:
         bit = (pending & -pending).bit_length() - 1
+        if self.profile_enabled:
+            self._profile_interrupt_entries += 1
         self.ime = False
         self.bus.interrupt_flags = self.bus.interrupt_flags & ~(1 << bit)
         self._internal_cycle(8)
@@ -1310,9 +3433,128 @@ class CPU:
         self._add_cycles(4)
         return value
 
+    def _read8_fast(self, address: int) -> int:
+        address &= 0xFFFF
+        bus = self.bus
+        if address <= 0x7FFF:
+            if bus._oam_dma_active:
+                return bus.read8(address)
+            if bus.boot_rom_enabled and address < len(bus.boot_rom):
+                return bus.boot_rom[address]
+            if self._fast_rom_is_mbc3:
+                data = self._fast_rom_data
+                if address < 0x4000:
+                    return data[address] if address < self._fast_rom_data_len else 0xFF
+                return data[
+                    self._fast_rom_cartridge._mbc3_rom_bank_offset
+                    + (address - 0x4000)
+                ]
+            return bus.mapper.read_rom(address)
+        if 0xFF80 <= address <= 0xFFFE:
+            return bus.hram[address - 0xFF80]
+        if bus._oam_dma_active:
+            return bus.read8(address)
+        if 0xA000 <= address <= 0xBFFF:
+            return bus.mapper.read_ram(address)
+        if 0xC000 <= address <= 0xDFFF:
+            return bus.wram[address - 0xC000]
+        if 0xE000 <= address <= 0xFDFF:
+            return bus.wram[address - 0xE000]
+        return bus.read8(address)
+
+    def _read8_direct_fast(self, address: int, stable_cycles: int = 0) -> int | None:
+        address &= 0xFFFF
+        bus = self.bus
+        if 0xFF80 <= address <= 0xFFFE:
+            return bus.hram[address - 0xFF80]
+        if bus._oam_dma_active:
+            return None
+        if address <= 0x7FFF:
+            if bus.boot_rom_enabled and address < 0x100:
+                return None
+            if self._fast_rom_is_mbc3:
+                data = self._fast_rom_data
+                if address < 0x4000:
+                    return data[address] if address < self._fast_rom_data_len else 0xFF
+                return data[
+                    self._fast_rom_cartridge._mbc3_rom_bank_offset
+                    + (address - 0x4000)
+                ]
+            return bus.mapper.read_rom(address)
+        if 0x8000 <= address <= 0x9FFF and stable_cycles:
+            if bus.ppu.cycles_until_next_event() > stable_cycles:
+                return bus.vram[address - 0x8000] if bus._vram_read_accessible() else 0xFF
+            return None
+        if 0xA000 <= address <= 0xBFFF:
+            return bus.mapper.read_ram(address)
+        if 0xC000 <= address <= 0xDFFF:
+            return bus.wram[address - 0xC000]
+        if 0xE000 <= address <= 0xFDFF:
+            return bus.wram[address - 0xE000]
+        return None
+
     def _write8(self, address: int, value: int) -> None:
         self.bus.write8(address, value)
         self._add_cycles(4)
+
+    def _write8_fast(self, address: int, value: int) -> None:
+        address &= 0xFFFF
+        value &= 0xFF
+        bus = self.bus
+        if 0xFF80 <= address <= 0xFFFE:
+            bus.hram[address - 0xFF80] = value
+            return
+        if bus._oam_dma_active:
+            bus.write8(address, value)
+            return
+        if 0xC000 <= address <= 0xDFFF:
+            bus.wram[address - 0xC000] = value
+            return
+        if 0xE000 <= address <= 0xFDFF:
+            bus.wram[address - 0xE000] = value
+            return
+        bus.write8(address, value)
+
+    def _write8_direct_fast(self, address: int, value: int, stable_cycles: int = 0) -> bool:
+        address &= 0xFFFF
+        value &= 0xFF
+        bus = self.bus
+        if 0xFF80 <= address <= 0xFFFE:
+            bus.hram[address - 0xFF80] = value
+            return True
+        if bus._oam_dma_active:
+            return False
+        if address <= 0x7FFF:
+            bus.mapper.write_rom_control(address, value)
+            return True
+        if 0x8000 <= address <= 0x9FFF and stable_cycles:
+            if bus.ppu.cycles_until_next_event() > stable_cycles:
+                if bus._vram_write_accessible():
+                    bus.vram[address - 0x8000] = value
+                return True
+            return False
+        if 0xA000 <= address <= 0xBFFF:
+            bus.mapper.write_ram(address, value)
+            return True
+        if 0xC000 <= address <= 0xDFFF:
+            bus.wram[address - 0xC000] = value
+            return True
+        if 0xE000 <= address <= 0xFDFF:
+            bus.wram[address - 0xE000] = value
+            return True
+        return False
+
+    def _is_direct_fast_address(self, address: int) -> bool:
+        address &= 0xFFFF
+        if 0xFF80 <= address <= 0xFFFE:
+            return True
+        if self.bus._oam_dma_active:
+            return False
+        return 0xA000 <= address <= 0xBFFF or 0xC000 <= address <= 0xFDFF
+
+    def _can_batch_direct_memory_cycles(self) -> bool:
+        bus = self.bus
+        return not bus._oam_dma_active and not bus._oam_dma_requested
 
     def _write16(self, address: int, value: int) -> None:
         self._write8(address, value & 0xFF)
