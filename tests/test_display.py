@@ -110,12 +110,14 @@ class FakeAudioPlayer:
         self.target_buffer_ms = target_buffer_ms
         self.chunk_ms = chunk_ms
         self.started = False
+        self.start_calls = 0
         self.closed = False
         self.writes: list[list[tuple[int, int]]] = []
         FakeAudioPlayer.instances.append(self)
 
     def start(self) -> None:
         self.started = True
+        self.start_calls += 1
 
     def write(self, samples) -> None:
         self.started = True
@@ -346,10 +348,13 @@ class DisplayTests(unittest.TestCase):
 
         with patch("display.BufferedAudioPlayer", FakeAudioPlayer):
             display._on_key_press(FakeEvent("m"))
+            player = FakeAudioPlayer.instances[0]
+            self.assertTrue(player.started)
+            self.assertEqual(player.start_calls, 1)
+            self.assertEqual(player.writes, [])
             display._run_frame()
             display._on_key_press(FakeEvent("m"))
 
-        player = FakeAudioPlayer.instances[0]
         self.assertTrue(player.started)
         self.assertEqual(player.sample_rate, 22_050)
         self.assertEqual(player.target_buffer_ms, 80)
@@ -375,7 +380,9 @@ class DisplayTests(unittest.TestCase):
         first_player, second_player = FakeAudioPlayer.instances
         self.assertEqual(emulator.reset_count, 1)
         self.assertTrue(first_player.closed)
+        self.assertEqual(first_player.start_calls, 1)
         self.assertFalse(second_player.closed)
+        self.assertEqual(second_player.start_calls, 1)
         self.assertEqual(emulator.bus.apu.sample_rates, [22_050, 22_050])
         self.assertEqual(emulator.bus.apu.output_enabled_values, [False, True, False, True])
 

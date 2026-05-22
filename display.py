@@ -500,16 +500,23 @@ class TkDisplay:
     def _start_audio(self, *, raise_on_error: bool) -> None:
         if self._audio_player is not None:
             return
+        player: BufferedAudioPlayer | None = None
         try:
             self.emulator.bus.apu.set_sample_rate(self.config.audio_sample_rate)
             self.emulator.bus.apu.set_output_enabled(True)
-            self._audio_player = BufferedAudioPlayer(
+            player = BufferedAudioPlayer(
                 sample_rate=self.config.audio_sample_rate,
                 target_buffer_ms=self.config.audio_buffer_ms,
                 chunk_ms=self.config.audio_chunk_ms,
             )
+            player.start()
+            self._audio_player = player
             self._open_audio_capture()
         except (RuntimeError, ValueError) as exc:
+            if player is not None:
+                player.close()
+            self._audio_player = None
+            self._close_audio_capture()
             self._audio_enabled = False
             self.emulator.bus.apu.set_output_enabled(False)
             if raise_on_error:

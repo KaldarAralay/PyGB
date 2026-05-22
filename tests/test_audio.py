@@ -76,6 +76,21 @@ class AudioTests(unittest.TestCase):
         self.assertEqual([frames for _payload, frames in backend.writes], [10, 5])
         self.assertEqual(player.stats().queued_frames, 20)
 
+    def test_buffered_audio_player_start_primes_target_buffer(self) -> None:
+        backend = FakePCMBackend(sample_rate=1000)
+        player = BufferedAudioPlayer(
+            sample_rate=1000,
+            chunk_ms=10,
+            target_buffer_ms=25,
+            max_buffer_ms=50,
+            backend=backend,
+        )
+
+        player.start()
+
+        self.assertEqual([frames for _payload, frames in backend.writes], [10, 10, 5])
+        self.assertEqual(player.stats().queued_frames, 25)
+
     def test_buffered_audio_player_tracks_underruns(self) -> None:
         backend = FakePCMBackend(sample_rate=1000)
         player = BufferedAudioPlayer(
