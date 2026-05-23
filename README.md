@@ -144,7 +144,7 @@ Run the full unit suite:
 Latest full suite result:
 
 ```text
-Ran 336 tests in 0.524s
+Ran 338 tests in 0.518s
 OK
 ```
 
@@ -172,7 +172,7 @@ Run the Blargg `dmg_sound` APU ROM-suite lane:
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_apu.py --json-output qa-output\apu-dmg-sound.json
 ```
 
-The default APU lane runs all 12 single `dmg_sound` ROMs. Current baseline: `01-registers`, `02-len ctr`, `03-trigger`, and `06-overflow on trigger` pass; the remaining sweep, length, power, and CH3 wave-RAM edge cases are tracked as `XFAIL`. Use `--expected-pass-only` for the strict passing subset, or `--strict` when working toward a full-suite pass.
+The default APU lane runs all 12 single `dmg_sound` ROMs. Current baseline: `01-registers`, `02-len ctr`, `03-trigger`, `04-sweep`, `05-sweep details`, and `06-overflow on trigger` pass; the remaining length/power and CH3 wave-RAM edge cases are tracked as `XFAIL`. Use `--expected-pass-only` for the strict passing subset, or `--strict` when working toward a full-suite pass.
 
 Run the Pokemon Red PyBoy visual/OAM oracles:
 
@@ -197,8 +197,8 @@ Latest sprite-scene oracle and performance-gate evidence:
 
 - Oak's Lab encyclopedia crop: `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F`.
 - Sprite-heavy saved-game scene: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes.
-- Blargg `dmg_sound`: 4 passing ROMs, 8 tracked `XFAIL` ROMs, no unexpected failures in the default lane.
-- Performance gate: text `run_fps=97.10`; sprites `run_fps=79.57`; sprites with headless audio output `run_fps=66.97`, `apu_dropped_samples=0`.
+- Blargg `dmg_sound`: 6 passing ROMs, 6 tracked `XFAIL` ROMs, no unexpected failures in the default lane.
+- Performance gate: text `run_fps=95.92`; sprites `run_fps=76.86`; sprites with headless audio output `run_fps=65.60`, `apu_dropped_samples=0`.
 
 Verify headless/live WAV identity for a fixed Pokemon Red run:
 

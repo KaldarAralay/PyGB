@@ -700,16 +700,16 @@ class APU:
         if self._sweep_timer > 0:
             return
 
-        pace = self._sweep_pace_latch
-        self._sweep_pace_latch = self._sweep_pace()
-        self._sweep_timer = self._sweep_pace_latch or 8
+        pace = self._sweep_pace()
+        self._sweep_pace_latch = pace
+        self._sweep_timer = pace or 8
         if pace == 0:
-            return
-        if self._sweep_shift() == 0:
             return
 
         new_period = self._calculate_sweep_period()
         if self._disable_ch1_if_sweep_overflows(new_period):
+            return
+        if self._sweep_shift() == 0:
             return
 
         self._sweep_shadow_period = new_period
@@ -723,13 +723,6 @@ class APU:
             and not value & 0x08
         ):
             self._disable_channel(0)
-        old_pace = (old_value >> 4) & 0x07
-        new_pace = (value >> 4) & 0x07
-        if new_pace == 0:
-            self._sweep_pace_latch = 0
-        elif old_pace == 0 and self._sweep_enabled:
-            self._sweep_pace_latch = new_pace
-            self._sweep_timer = new_pace
 
     def _sweep_pace(self) -> int:
         return (self.bus.io[0x10] >> 4) & 0x07

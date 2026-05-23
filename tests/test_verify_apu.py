@@ -79,20 +79,20 @@ class ApuVerifierTests(unittest.TestCase):
             output="Failed",
         )
         known_failure = ApuRomResult(
-            name="04-sweep.gb",
-            path=Path("04-sweep.gb"),
+            name="07-len sweep period sync.gb",
+            path=Path("07-len sweep period sync.gb"),
             passed=False,
             failed=True,
             timed_out=False,
-            status_code=3,
+            status_code=5,
             signature_present=True,
             instructions=1,
             cycles=4,
-            output="Failed #3",
+            output="Failed #5",
         )
         unexpected_pass = ApuRomResult(
-            name="05-sweep details.gb",
-            path=Path("05-sweep details.gb"),
+            name="08-len ctr during power.gb",
+            path=Path("08-len ctr during power.gb"),
             passed=True,
             failed=False,
             timed_out=False,
@@ -113,14 +113,14 @@ class ApuVerifierTests(unittest.TestCase):
             failures,
             [
                 "01-registers.gb: expected PASS, got fail",
-                "05-sweep details.gb: XPASS, update EXPECTED_PASS/known-failure list",
+                "08-len ctr during power.gb: XPASS, update EXPECTED_PASS/known-failure list",
             ],
         )
 
     def test_allow_xpass_accepts_known_failure_improvement(self) -> None:
         unexpected_pass = ApuRomResult(
-            name="05-sweep details.gb",
-            path=Path("05-sweep details.gb"),
+            name="08-len ctr during power.gb",
+            path=Path("08-len ctr during power.gb"),
             passed=True,
             failed=False,
             timed_out=False,

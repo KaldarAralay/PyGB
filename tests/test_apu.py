@@ -402,7 +402,7 @@ class APUTests(unittest.TestCase):
 
         self.assertEqual(bus.read8(0xFF26) & 0x01, 0x00)
 
-    def test_ch1_sweep_shift_zero_does_not_calculate_or_overflow(self) -> None:
+    def test_ch1_sweep_shift_zero_does_not_calculate_or_overflow_on_trigger(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
@@ -412,31 +412,62 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF13, 0x00)
         bus.write8(0xFF14, 0x87)
 
-        bus.tick(FRAME_SEQUENCER_PERIOD * 2)
-
         self.assertEqual(bus.read8(0xFF26) & 0x01, 0x01)
         self.assertEqual(bus.io[0x13], 0x00)
         self.assertEqual(bus.io[0x14] & 0x07, 0x07)
 
-    def test_ch1_sweep_pace_zero_then_nonzero_reloads_timer(self) -> None:
+    def test_ch1_sweep_shift_zero_calculates_overflow_on_clock_only(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
 
-        bus.write8(0xFF10, 0x21)
+        bus.write8(0xFF10, 0x10)
+        bus.write8(0xFF12, 0xF0)
+        bus.write8(0xFF13, 0xFF)
+        bus.write8(0xFF14, 0x87)
+
+        self.assertEqual(bus.read8(0xFF26) & 0x01, 0x01)
+
+        bus.apu._clock_sweep()
+
+        self.assertEqual(bus.read8(0xFF26) & 0x01, 0x00)
+
+    def test_ch1_sweep_shift_zero_does_not_update_frequency_on_clock(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+
+        bus.write8(0xFF10, 0x10)
+        bus.write8(0xFF12, 0xF0)
+        bus.write8(0xFF13, 0x00)
+        bus.write8(0xFF14, 0x83)
+
+        bus.apu._clock_sweep()
+
+        self.assertEqual(bus.read8(0xFF26) & 0x01, 0x01)
+        self.assertEqual(bus.io[0x13], 0x00)
+        self.assertEqual(bus.io[0x14] & 0x07, 0x03)
+
+    def test_ch1_sweep_period_zero_timer_counts_as_eight_without_write_reset(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+
+        bus.write8(0xFF10, 0x01)
         bus.write8(0xFF12, 0xF0)
         bus.write8(0xFF13, 0x00)
         bus.write8(0xFF14, 0x84)
-        bus.apu._clock_sweep()
 
-        bus.write8(0xFF10, 0x01)
         for _ in range(3):
+            bus.apu._clock_sweep()
+
+        bus.write8(0xFF10, 0x11)
+        for _ in range(4):
             bus.apu._clock_sweep()
 
         self.assertEqual(bus.io[0x13], 0x00)
         self.assertEqual(bus.io[0x14] & 0x07, 0x04)
 
-        bus.write8(0xFF10, 0x11)
         bus.apu._clock_sweep()
 
         self.assertEqual(bus.io[0x13], 0x00)
