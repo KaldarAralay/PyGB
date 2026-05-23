@@ -1831,10 +1831,11 @@ class CPU:
             attr = int(attr)
             tile_offset = int(tile_offset)
             if sprite_nibble == 0x0B:
-                tile = 0x7C
-                branch_instruction_adjust = -4
-                branch_cycle_adjust = -20
-                carry = 0
+                tile_sum = 0x7C + tile_offset
+                tile = tile_sum & 0xFF
+                branch_instruction_adjust = -3
+                branch_cycle_adjust = -16
+                carry = FLAG_C if tile_sum > 0xFF else 0
             else:
                 tile_base = (sprite_nibble << 3) + (sprite_nibble << 2)
                 tile_sum = tile_base + tile_offset
