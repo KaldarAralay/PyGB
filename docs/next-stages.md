@@ -1,14 +1,16 @@
 # GBemu Next Stages
 
-Date: 2026-05-22
+Date: 2026-05-23
 
-This document is the active roadmap. Historical Stage 1 CPU evidence is preserved in `docs\stage1-audit.md`; current compatibility evidence is in `docs\compatibility.md`.
+This document is the active roadmap. Historical Stage 1 CPU evidence is preserved in `docs\stage1-audit.md`; current compatibility evidence is in `docs\compatibility.md`; the Pan Docs subsystem inventory is in `docs\pandocs-inventory.md`.
 
 ## Current State
 
 GBemu is now a playable DMG emulator for the current primary real-ROM target, Pokemon Red. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, and rolling frame/audio profiling.
 
 The project is not cycle-perfect and not yet a broad commercial compatibility emulator. The strongest next work is to keep adding evidence while improving accuracy and tail-latency behavior.
+
+Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, and functional audio are in place. The largest remaining gaps are full pixel FIFO completeness, APU ROM-suite/analog accuracy, broader commercial compatibility, real link/SGB/peripheral behavior, and CGB mode.
 
 ## Completed Milestones
 
@@ -37,6 +39,7 @@ Done:
 - Selected mode-3 timing model for SCX, SCY, WX, window enable/disable, LCDC source changes, OBJ enable/disable, OBJ size changes, palette writes, sprite/window stalls, and tile-data fetch-boundary cases.
 - Frame dumps through PPM/BMP and live Tkinter display output.
 - `dmg-acid2` reference-image regression and strict selected external PPU gate through `scripts\verify_ppu.py --strict`.
+- Pokemon Red PyBoy visual/OAM oracles for Oak's Lab encyclopedia sprites and the sprite-heavy saved-game scene.
 
 Remaining:
 
@@ -109,6 +112,8 @@ Run these before treating a compatibility or timing change as safe:
 .\.tools\python-3.12.4-embed-amd64\python.exe -B -m unittest discover -v
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_ppu.py --strict --max-steps 3000000
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_pokemon_red.py
+python -B scripts\verify_oak_encyclopedia_oracle.py
+python -B scripts\verify_pokemon_red_sprite_scene_oracle.py
 ```
 
 For audio-sensitive changes, also compare a fixed headless/live WAV capture:
@@ -122,6 +127,7 @@ For performance-sensitive changes, profile Pokemon Red:
 
 ```powershell
 python -B main.py .\roms\PRed.gb --window --audio --max-instructions 0 --frames 1800 --profile-window --profile-window-interval 60
+python -B scripts\benchmark_pokemon_red_sprites.py --warmup-frames 6000 --profile-frames 600 --min-fps 30
 ```
 
 Current target thresholds:
@@ -135,14 +141,14 @@ Current target thresholds:
 
 ### 1. Make Pokemon Red A First-Class Automated Performance Gate
 
-The profiler already emits the right information. The next step is a script that runs a fixed Pokemon Red window/profile scenario, parses the output, and fails if:
+The headless sprite benchmark now has a simple `--min-fps` guard. The next step is a stricter gate that also parses fixed Pokemon Red window/profile scenarios and fails if:
 
 - Any non-startup 60-frame window drops below the chosen FPS target.
 - Audio queue dips below the configured threshold.
 - Any audio underrun/drop counter increments.
 - Instruction/cycle/frame totals unexpectedly drift for fixed headless slices.
 
-This would turn the current manual performance evidence into a repeatable CI-style gate.
+This would turn the current manual live-window evidence into a repeatable CI-style gate.
 
 ### 2. Add APU ROM-Suite Coverage
 
@@ -181,3 +187,7 @@ The current Pokemon Red speedups are guarded by exact ROM byte patterns, LCD sta
 - Preserve instruction and cycle totals.
 - Fall back to normal interpretation for uncommon branches.
 - Verify against tests, strict PPU, fixed headless slices, live profile, and WAV identity when audio output is active.
+
+### 6. Defer CGB Until DMG Gates Are Broader
+
+CGB is a large cross-cutting feature, not a small rendering option. It touches CGB boot behavior, VRAM and WRAM banking, CGB palettes, HDMA, double-speed timing, OAM priority differences, and many IO registers. Start it after DMG audio/PPU/performance gates are stable enough to catch regressions quickly.

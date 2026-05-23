@@ -2,7 +2,7 @@
 
 GBemu is a DMG-only Game Boy emulator written in Python. It now runs real commercial ROMs well enough for interactive testing: Pokemon Red is the primary gameplay regression target, Dr. Mario is a visual smoke target, and the CPU/PPU/APU subsystems have automated regression gates.
 
-Current verified status: May 22, 2026.
+Current verified status: May 23, 2026.
 
 ## Current Scope
 
@@ -14,7 +14,7 @@ Current verified status: May 22, 2026.
 - Joypad input through `FF00`, CLI held buttons, STOP wake through selected joypad lines, and Tkinter keyboard controls.
 - APU register/channel model with pulse, wave, noise, length, envelope, sweep, DAC gating, mixer, initial high-pass filtering, sample buffering, WAV dumps, and live Windows audio playback.
 - Tkinter window mode with frame pacing, live audio, pause/reset/trace toggles, save-RAM lifecycle, and rolling frame/audio spike profiling.
-- Pokemon Red performance hot paths for heavy MBC3/LCD-off copy/fill/decompression frames, keeping real gameplay mostly near 60 fps with remaining transition spikes tracked by profiler output.
+- Pokemon Red performance hot paths for heavy MBC3/LCD-off copy/fill/decompression frames, with exact-vs-fast unit coverage for shadow-OAM/object helpers and PyBoy visual/OAM oracles for current sprite regressions.
 
 ## Quick Start
 
@@ -144,7 +144,7 @@ Run the full unit suite:
 Latest full suite result:
 
 ```text
-Ran 301 tests in 0.423s
+Ran 327 tests in 0.548s
 OK
 ```
 
@@ -165,6 +165,25 @@ Run the Pokemon Red real-ROM regression gate:
 ```powershell
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_pokemon_red.py
 ```
+
+Run the Pokemon Red PyBoy visual/OAM oracles:
+
+```powershell
+python -B scripts\verify_oak_encyclopedia_oracle.py
+python -B scripts\verify_pokemon_red_sprite_scene_oracle.py
+```
+
+Run the sprite-heavy Pokemon Red performance profile:
+
+```powershell
+python -B scripts\benchmark_pokemon_red_sprites.py --warmup-frames 6000 --profile-frames 600 --min-fps 30
+```
+
+Latest sprite-scene oracle and profile evidence:
+
+- Oak's Lab encyclopedia crop: `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F`.
+- Sprite-heavy saved-game scene: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes.
+- Sprite-heavy headless profile: `run_fps=78.44`, frame range `7.87-19.87 ms`.
 
 Verify headless/live WAV identity for a fixed Pokemon Red run:
 
@@ -188,4 +207,4 @@ SHA-256: 6575f192cdea8ed0bf84c1ee775add94035c7e556a36c2a094a1dbb2f052b10b
 - Commercial compatibility is early. Pokemon Red is the primary tested gameplay target; Dr. Mario is a visual smoke target. Other games should be treated as exploratory until they are added to the compatibility matrix.
 - Performance includes several real-ROM-specific hot paths. They preserve current instruction/cycle/audio identity for the covered Pokemon Red windows, but broader optimization should continue to be measured with verification gates on.
 
-Detailed compatibility evidence lives in `docs\compatibility.md`; the active roadmap lives in `docs\next-stages.md`.
+Detailed compatibility evidence lives in `docs\compatibility.md`; the Pan Docs inventory lives in `docs\pandocs-inventory.md`; the active roadmap lives in `docs\next-stages.md`.
