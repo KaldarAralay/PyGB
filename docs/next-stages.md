@@ -58,11 +58,12 @@ Done:
 - Joypad `FF00` matrix, selected-line interrupts, held-button non-retriggering, and STOP wake.
 - Tkinter window mode with keyboard input, pause/reset/trace/audio toggles, frame pacing, and live audio.
 - Rolling window profiler with run/draw/audio timing, CPU/bus/PPU/APU stats, audio queue range, worst-frame spike fields, and coarse spike cause attribution.
+- Automated Pokemon Red headless performance gate for fixed text, sprite-heavy, and sprite-heavy-with-audio scenarios, including parsed metrics and deterministic frame/instruction/cycle drift checks.
 - Pokemon Red frame pacing round 1: worst non-startup live windows now clear 50 fps with zero audio underruns/drops in the latest profile.
 
 Remaining:
 
-- Add automated capture for window-profile summaries so performance gates can run without manual log inspection.
+- Add automated capture for window-profile summaries so live performance gates can run without manual log inspection.
 - Add more scripted input/playback scenarios for menus and gameplay.
 - Consider optional alternate frontends later if Tkinter becomes the limiting factor.
 
@@ -114,6 +115,7 @@ Run these before treating a compatibility or timing change as safe:
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_pokemon_red.py
 python -B scripts\verify_oak_encyclopedia_oracle.py
 python -B scripts\verify_pokemon_red_sprite_scene_oracle.py
+python -B scripts\verify_pokemon_red_performance.py --json-output qa-output\pokemon-red-performance-gate.json
 ```
 
 For audio-sensitive changes, also compare a fixed headless/live WAV capture:
@@ -127,7 +129,7 @@ For performance-sensitive changes, profile Pokemon Red:
 
 ```powershell
 python -B main.py .\roms\PRed.gb --window --audio --max-instructions 0 --frames 1800 --profile-window --profile-window-interval 60
-python -B scripts\benchmark_pokemon_red_sprites.py --warmup-frames 6000 --profile-frames 600 --min-fps 30
+python -B scripts\verify_pokemon_red_performance.py --window-profile-log qa-output\pokemon-red-window-profile.log
 ```
 
 Current target thresholds:
@@ -139,16 +141,17 @@ Current target thresholds:
 
 ## Recommended Next Goals
 
-### 1. Make Pokemon Red A First-Class Automated Performance Gate
+### 1. Add Live-Window Capture To The Performance Gate
 
-The headless sprite benchmark now has a simple `--min-fps` guard. The next step is a stricter gate that also parses fixed Pokemon Red window/profile scenarios and fails if:
+The headless performance gate now runs fixed text, sprite-heavy, and sprite-heavy-with-audio scenarios, parses structured metrics, checks deterministic frame/instruction/cycle totals, and fails on FPS or headless APU sample-drop regressions.
+
+The remaining performance-gate work is live-window capture. The parser already accepts saved `window-profile` logs and fails if:
 
 - Any non-startup 60-frame window drops below the chosen FPS target.
 - Audio queue dips below the configured threshold.
 - Any audio underrun/drop counter increments.
-- Instruction/cycle/frame totals unexpectedly drift for fixed headless slices.
 
-This would turn the current manual live-window evidence into a repeatable CI-style gate.
+The next step is to capture those live logs reproducibly enough that the parser can run without manual copy/paste.
 
 ### 2. Add APU ROM-Suite Coverage
 

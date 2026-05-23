@@ -14,7 +14,7 @@ Current verified status: May 23, 2026.
 - Joypad input through `FF00`, CLI held buttons, STOP wake through selected joypad lines, and Tkinter keyboard controls.
 - APU register/channel model with pulse, wave, noise, length, envelope, sweep, DAC gating, mixer, initial high-pass filtering, sample buffering, WAV dumps, and live Windows audio playback.
 - Tkinter window mode with frame pacing, live audio, pause/reset/trace toggles, save-RAM lifecycle, and rolling frame/audio spike profiling.
-- Pokemon Red performance hot paths for heavy MBC3/LCD-off copy/fill/decompression frames, with exact-vs-fast unit coverage for shadow-OAM/object helpers and PyBoy visual/OAM oracles for current sprite regressions.
+- Pokemon Red performance hot paths for heavy MBC3/LCD-off copy/fill/decompression frames, with exact-vs-fast unit coverage for shadow-OAM/object helpers, PyBoy visual/OAM oracles for current sprite regressions, and an automated headless performance gate.
 
 ## Quick Start
 
@@ -144,7 +144,7 @@ Run the full unit suite:
 Latest full suite result:
 
 ```text
-Ran 327 tests in 0.548s
+Ran 331 tests in 0.528s
 OK
 ```
 
@@ -173,17 +173,23 @@ python -B scripts\verify_oak_encyclopedia_oracle.py
 python -B scripts\verify_pokemon_red_sprite_scene_oracle.py
 ```
 
-Run the sprite-heavy Pokemon Red performance profile:
+Run the automated Pokemon Red performance gate:
 
 ```powershell
-python -B scripts\benchmark_pokemon_red_sprites.py --warmup-frames 6000 --profile-frames 600 --min-fps 30
+python -B scripts\verify_pokemon_red_performance.py --json-output qa-output\pokemon-red-performance-gate.json
 ```
 
-Latest sprite-scene oracle and profile evidence:
+The gate runs fixed text, sprite-heavy, and sprite-heavy-with-audio headless scenarios. It parses benchmark output, enforces FPS thresholds, checks deterministic frame/instruction/cycle totals, and fails if headless APU output drops samples. It can also validate captured live `window-profile` logs:
+
+```powershell
+python -B scripts\verify_pokemon_red_performance.py --window-profile-log qa-output\pokemon-red-window-profile.log
+```
+
+Latest sprite-scene oracle and performance-gate evidence:
 
 - Oak's Lab encyclopedia crop: `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F`.
 - Sprite-heavy saved-game scene: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes.
-- Sprite-heavy headless profile: `run_fps=78.44`, frame range `7.87-19.87 ms`.
+- Performance gate: text `run_fps=97.14`; sprites `run_fps=79.95`; sprites with headless audio output `run_fps=67.11`, `apu_dropped_samples=0`.
 
 Verify headless/live WAV identity for a fixed Pokemon Red run:
 

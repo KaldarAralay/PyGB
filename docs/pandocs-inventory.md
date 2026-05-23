@@ -27,13 +27,13 @@ The biggest remaining gaps versus Pan Docs are not "can a ROM boot?" gaps anymor
 
 | Gate | Current result |
 | --- | --- |
-| Unit suite | `327 tests`, `OK` on 2026-05-23. |
+| Unit suite | `331 tests`, `OK` on 2026-05-23. |
 | CPU ROM gate | `scripts\verify_cpu.py` passes Blargg individual `cpu_instrs` ROMs and combined `cpu_instrs.gb`. |
 | PPU strict gate | `scripts\verify_ppu.py --strict --max-steps 3000000` covers `dmg-acid2`, current Mooneye PPU tests, and selected Mealybug image cases. |
 | Pokemon Red smoke | `scripts\verify_pokemon_red.py` covers headless smoke, mapper probe, and save round-trip. |
 | Oak's Lab encyclopedia oracle | `scripts\verify_oak_encyclopedia_oracle.py`: crop `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F` match PyBoy. |
 | Sprite-heavy scene oracle | `scripts\verify_pokemon_red_sprite_scene_oracle.py`: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes. |
-| Sprite-heavy performance profile | `scripts\benchmark_pokemon_red_sprites.py --warmup-frames 6000 --profile-frames 600 --min-fps 30`: `run_fps=78.44`, frame range `7.87-19.87 ms`. |
+| Automated Pokemon Red performance gate | `scripts\verify_pokemon_red_performance.py`: text `run_fps=97.14`; sprites `run_fps=79.95`; sprites with headless audio output `run_fps=67.11`, `apu_dropped_samples=0`; deterministic frame/instruction/cycle totals matched exactly. |
 
 ## Pan Docs Coverage Table
 
@@ -79,7 +79,7 @@ Not currently in scope:
 
 ## Practical Next Goals
 
-1. Turn Pokemon Red performance profiling into a stricter automated gate that parses FPS, frame spikes, audio queue health, and underrun/drop counters.
+1. Expand the Pokemon Red performance gate with captured live-window profile fixtures once the preferred log capture workflow is stable.
 2. Add an APU ROM-suite lane and keep the current WAV identity checks for regression safety.
 3. Broaden the PPU gate one case at a time, especially around FIFO and mid-scanline behavior.
 4. Add a second commercial ROM as a real gate, with scripted input, save behavior, visual crop/oracle, and performance criteria.
