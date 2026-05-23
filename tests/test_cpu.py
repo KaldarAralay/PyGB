@@ -39,6 +39,113 @@ def make_mbc3_cpu(start_pc: int) -> tuple[CPU, Bus]:
     return CPU(bus, start_pc=start_pc), bus
 
 
+POKEMON_SPRITE_OAM_PIECE_LOOP = bytes(
+    [
+        0xF0,
+        0x92,
+        0xC6,
+        0x10,
+        0x86,
+        0x12,
+        0x23,
+        0xF0,
+        0x91,
+        0xC6,
+        0x08,
+        0x86,
+        0x1C,
+        0x12,
+        0x1C,
+        0x0A,
+        0x03,
+        0xC5,
+        0x47,
+        0xFA,
+        0xCD,
+        0xD5,
+        0xCB,
+        0x37,
+        0xE6,
+        0x0F,
+        0xFE,
+        0x0B,
+        0x20,
+        0x04,
+        0x3E,
+        0x7C,
+        0x18,
+        0x08,
+        0xCB,
+        0x27,
+        0xCB,
+        0x27,
+        0x4F,
+        0xCB,
+        0x27,
+        0x81,
+        0x80,
+        0xC1,
+        0x12,
+        0x23,
+        0x1C,
+        0x7E,
+        0xCB,
+        0x4F,
+        0x28,
+        0x03,
+        0xF0,
+        0x94,
+        0xB6,
+        0x23,
+        0x12,
+        0x1C,
+        0xCB,
+        0x47,
+        0x28,
+        0xC2,
+    ]
+)
+
+POKEMON_OBJECT_POSITION_HELPER = bytes(
+    [
+        0x1C,
+        0x1C,
+        0x1A,
+        0xE0,
+        0x92,
+        0x1C,
+        0x1C,
+        0x1A,
+        0xE0,
+        0x91,
+        0x3E,
+        0x04,
+        0x83,
+        0x5F,
+        0xF0,
+        0x92,
+        0xC6,
+        0x04,
+        0xE6,
+        0xF0,
+        0x12,
+        0x1C,
+        0xF0,
+        0x91,
+        0xE6,
+        0xF0,
+        0x12,
+        0xC9,
+    ]
+)
+
+HOT_COPY_LOOP = bytes([0x2A, 0x12, 0x13, 0x0B, 0x79, 0xB0, 0x20, 0xF8, 0xC9])
+HOT_DUPLICATE_COPY_LOOP = bytes(
+    [0x2A, 0x12, 0x13, 0x12, 0x13, 0x0B, 0x79, 0xB0, 0x20, 0xF6]
+)
+HOT_FILL_LOOP = bytes([0x7A, 0x22, 0x0B, 0x78, 0xB1, 0x20, 0xF9])
+
+
 class CPUTests(unittest.TestCase):
     def test_step_skips_trace_formatting_when_trace_disabled(self) -> None:
         cpu, _ = make_cpu(bytes([0x00]))
@@ -1189,6 +1296,239 @@ class CPUTests(unittest.TestCase):
         self.assertEqual(cpu.instructions, 146)
         self.assertEqual(cpu.cycles, 1592)
 
+    def _run_hot_copy_loop_scenario(
+        self,
+        *,
+        fast: bool,
+        duplicate: bool,
+    ) -> tuple[object, ...]:
+        pc = 0x1837 if duplicate else 0x00B5
+        loop = HOT_DUPLICATE_COPY_LOOP if duplicate else HOT_COPY_LOOP
+        cpu, bus = make_mbc3_cpu(pc)
+        rom = bytearray(bus.cartridge.data)
+        rom[pc : pc + len(loop)] = loop
+        bus.cartridge.data = bytes(rom)
+        cpu._fast_rom_data = bus.cartridge.data
+        cpu._fast_rom_data_len = len(bus.cartridge.data)
+        bus.io[0x40] = 0x00
+
+        source = 0xC200
+        destination = 0xC300
+        count = 5
+        for index, value in enumerate((0x10, 0x11, 0x12, 0x13)):
+            bus.write8(source + index, value)
+        for index in range(8):
+            bus.write8(destination + index, 0xAA)
+        cpu.hl = source
+        cpu.de = destination
+        cpu.bc = count
+
+        instructions_per_iteration = 9 if duplicate else 7
+        max_instructions = (count - 1) * instructions_per_iteration
+        if fast:
+            with patch.object(
+                cpu, "_step_prefetched_fast", wraps=cpu._step_prefetched_fast
+            ) as step_mock:
+                cpu.run(max_instructions=max_instructions)
+            step_mock.assert_not_called()
+        else:
+            cpu.run(max_instructions=max_instructions, after_step=lambda: None)
+
+        destination_length = (count - 1) * (2 if duplicate else 1)
+        return (
+            cpu.a,
+            cpu.f,
+            cpu.b,
+            cpu.c,
+            cpu.d,
+            cpu.e,
+            cpu.h,
+            cpu.l,
+            cpu.pc,
+            cpu.sp,
+            cpu.instructions,
+            cpu.cycles,
+            tuple(bus.read8(destination + index) for index in range(destination_length)),
+        )
+
+    def test_run_fast_forwards_hot_copy_loop_shadow_oam_destination_matches_exact(
+        self,
+    ) -> None:
+        for duplicate in (False, True):
+            with self.subTest(duplicate=duplicate):
+                fast = self._run_hot_copy_loop_scenario(
+                    fast=True,
+                    duplicate=duplicate,
+                )
+                exact = self._run_hot_copy_loop_scenario(
+                    fast=False,
+                    duplicate=duplicate,
+                )
+
+                self.assertEqual(fast, exact)
+
+    def _run_hot_fill_loop_scenario(self, *, fast: bool) -> tuple[object, ...]:
+        cpu, bus = make_mbc3_cpu(0x36E2)
+        rom = bytearray(bus.cartridge.data)
+        rom[0x36E2 : 0x36E2 + len(HOT_FILL_LOOP)] = HOT_FILL_LOOP
+        bus.cartridge.data = bytes(rom)
+        cpu._fast_rom_data = bus.cartridge.data
+        cpu._fast_rom_data_len = len(bus.cartridge.data)
+        bus.io[0x40] = 0x00
+
+        destination = 0xC320
+        count = 5
+        for index in range(count - 1):
+            bus.write8(destination + index, 0xAA)
+        cpu.hl = destination
+        cpu.bc = count
+        cpu.d = 0x34
+
+        max_instructions = (count - 1) * 6
+        if fast:
+            with patch.object(
+                cpu, "_step_prefetched_fast", wraps=cpu._step_prefetched_fast
+            ) as step_mock:
+                cpu.run(max_instructions=max_instructions)
+            step_mock.assert_not_called()
+        else:
+            cpu.run(max_instructions=max_instructions, after_step=lambda: None)
+
+        return (
+            cpu.a,
+            cpu.f,
+            cpu.b,
+            cpu.c,
+            cpu.d,
+            cpu.e,
+            cpu.h,
+            cpu.l,
+            cpu.pc,
+            cpu.sp,
+            cpu.instructions,
+            cpu.cycles,
+            tuple(bus.read8(destination + index) for index in range(count - 1)),
+        )
+
+    def test_run_fast_forwards_hot_fill_loop_shadow_oam_destination_matches_exact(
+        self,
+    ) -> None:
+        fast = self._run_hot_fill_loop_scenario(fast=True)
+        exact = self._run_hot_fill_loop_scenario(fast=False)
+
+        self.assertEqual(fast, exact)
+
+    def _run_sprite_oam_piece_loop_scenario(
+        self,
+        *,
+        fast: bool,
+        sprite_id: int,
+        piece_bytes: bytes,
+        tile_offsets: bytes,
+        max_instructions: int,
+        de_low: int,
+        target_length: int,
+    ) -> tuple[object, ...]:
+        cpu, bus = make_mbc3_cpu(0x4B6C)
+        rom = bytearray(bus.cartridge.data)
+        rom[0x4B6C : 0x4BAA] = POKEMON_SPRITE_OAM_PIECE_LOOP
+        rom[0x4098 : 0x4098 + len(piece_bytes)] = piece_bytes
+        rom[0x4080 : 0x4080 + len(tile_offsets)] = tile_offsets
+        bus.cartridge.data = bytes(rom)
+        cpu._fast_rom_data = bus.cartridge.data
+        cpu._fast_rom_data_len = len(bus.cartridge.data)
+        cpu.b = 0x40
+        cpu.c = 0x80
+        cpu.d = 0xC3
+        cpu.e = de_low
+        cpu.h = 0x40
+        cpu.l = 0x98
+        cpu.sp = 0xDFF1
+        bus.write8(0xD5CD, sprite_id)
+        bus.hram[0xFF91 - 0xFF80] = 0x10
+        bus.hram[0xFF92 - 0xFF80] = 0x20
+        bus.hram[0xFF94 - 0xFF80] = 0x80
+        for index in range(target_length):
+            bus.write8(0xC300 + de_low + index, 0xAA)
+
+        if fast:
+            with patch.object(
+                cpu, "_step_prefetched_fast", wraps=cpu._step_prefetched_fast
+            ) as step_mock:
+                cpu.run(max_instructions=max_instructions)
+            step_mock.assert_not_called()
+        else:
+            cpu.run(max_instructions=max_instructions, after_step=lambda: None)
+
+        return (
+            cpu.a,
+            cpu.f,
+            cpu.b,
+            cpu.c,
+            cpu.d,
+            cpu.e,
+            cpu.h,
+            cpu.l,
+            cpu.pc,
+            cpu.sp,
+            cpu.instructions,
+            cpu.cycles,
+            tuple(bus.read8(0xC300 + de_low + index) for index in range(target_length)),
+            tuple(bus.read8(0xDFEF + index) for index in range(2)),
+        )
+
+    def test_run_fast_forwards_pokemon_sprite_oam_piece_loop_matches_exact_normal_branch(
+        self,
+    ) -> None:
+        fast = self._run_sprite_oam_piece_loop_scenario(
+            fast=True,
+            sprite_id=0xA0,
+            piece_bytes=bytes([0x00, 0x00, 0x00, 0x01, 0x02, 0x03]),
+            tile_offsets=bytes([0x00, 0x05]),
+            max_instructions=78,
+            de_low=0x20,
+            target_length=8,
+        )
+        exact = self._run_sprite_oam_piece_loop_scenario(
+            fast=False,
+            sprite_id=0xA0,
+            piece_bytes=bytes([0x00, 0x00, 0x00, 0x01, 0x02, 0x03]),
+            tile_offsets=bytes([0x00, 0x05]),
+            max_instructions=78,
+            de_low=0x20,
+            target_length=8,
+        )
+
+        self.assertEqual(fast, exact)
+
+    def test_run_fast_forwards_pokemon_sprite_oam_piece_loop_matches_exact_b_branch(
+        self,
+    ) -> None:
+        piece_bytes = bytes(
+            [0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x08, 0x00, 0x02, 0x08, 0x08, 0x03]
+        )
+        tile_offsets = bytes([0x00, 0x01, 0x02, 0x03])
+        fast = self._run_sprite_oam_piece_loop_scenario(
+            fast=True,
+            sprite_id=0xB0,
+            piece_bytes=piece_bytes,
+            tile_offsets=tile_offsets,
+            max_instructions=144,
+            de_low=0x50,
+            target_length=16,
+        )
+        exact = self._run_sprite_oam_piece_loop_scenario(
+            fast=False,
+            sprite_id=0xB0,
+            piece_bytes=piece_bytes,
+            tile_offsets=tile_offsets,
+            max_instructions=144,
+            de_low=0x50,
+            target_length=16,
+        )
+
+        self.assertEqual(fast, exact)
+
     def test_run_fast_forwards_pokemon_sprite_oam_piece_loop(self) -> None:
         cpu, bus = make_mbc3_cpu(0x4B6C)
         rom = bytearray(bus.cartridge.data)
@@ -1436,6 +1776,67 @@ class CPUTests(unittest.TestCase):
         self.assertEqual(cpu.sp, 0xDFF1)
         self.assertEqual(cpu.instructions, 144)
         self.assertEqual(cpu.cycles, 1212)
+
+    def _run_object_position_helper_scenario(
+        self,
+        *,
+        fast: bool,
+        y_value: int,
+        x_value: int,
+    ) -> tuple[object, ...]:
+        cpu, bus = make_mbc3_cpu(0x4BD1)
+        bus.mapper.write_rom_control(0x2000, 0x01)
+        rom = bytearray(bus.cartridge.data)
+        rom[0x4BD1 : 0x4BED] = POKEMON_OBJECT_POSITION_HELPER
+        bus.cartridge.data = bytes(rom)
+        cpu._fast_rom_data = bus.cartridge.data
+        cpu._fast_rom_data_len = len(bus.cartridge.data)
+        cpu.d = 0xC1
+        cpu.e = 0x20
+        cpu.sp = 0xDFF0
+        bus.write8(0xDFF0, 0x67)
+        bus.write8(0xDFF1, 0x45)
+        bus.write8(0xC122, y_value)
+        bus.write8(0xC124, x_value)
+
+        if fast:
+            with patch.object(
+                cpu, "_step_prefetched_fast", wraps=cpu._step_prefetched_fast
+            ) as step_mock:
+                cpu.run(max_instructions=20)
+            step_mock.assert_not_called()
+        else:
+            cpu.run(max_instructions=20, after_step=lambda: None)
+
+        return (
+            cpu.a,
+            cpu.f,
+            cpu.d,
+            cpu.e,
+            cpu.pc,
+            cpu.sp,
+            cpu.instructions,
+            cpu.cycles,
+            bus.hram[0xFF92 - 0xFF80],
+            bus.hram[0xFF91 - 0xFF80],
+            tuple(bus.read8(0xC120 + index) for index in range(10)),
+        )
+
+    def test_run_fast_forwards_pokemon_object_position_helper_matches_exact(
+        self,
+    ) -> None:
+        fast = self._run_object_position_helper_scenario(
+            fast=True,
+            y_value=0x23,
+            x_value=0x57,
+        )
+        exact = self._run_object_position_helper_scenario(
+            fast=False,
+            y_value=0x23,
+            x_value=0x57,
+        )
+
+        self.assertEqual(fast, exact)
 
     def test_run_fast_forwards_pokemon_object_position_helper(self) -> None:
         cpu, bus = make_mbc3_cpu(0x4BD1)
