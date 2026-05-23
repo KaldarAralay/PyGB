@@ -159,20 +159,119 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF1A, 0x00)
         self.assertEqual(bus.read8(0xFF26) & 0x04, 0x00)
 
-    def test_wave_ram_access_is_blocked_while_channel_active(self) -> None:
+    def test_wave_ram_access_is_blocked_between_channel_fetches_while_active(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
         bus.write8(0xFF30, 0x9A)
 
         bus.write8(0xFF1A, 0x80)
-        bus.write8(0xFF1E, 0x80)
+        bus.write8(0xFF1D, 0xFC)
+        bus.write8(0xFF1E, 0x87)
 
         self.assertEqual(bus.read8(0xFF30), 0xFF)
+        bus.tick(14)
+        bus.tick(1)
         bus.write8(0xFF30, 0x45)
 
         bus.write8(0xFF1A, 0x00)
         self.assertEqual(bus.read8(0xFF30), 0x9A)
+
+    def test_wave_ram_access_while_active_uses_current_fetch_byte(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+        bus.write8(0xFF30, 0x9A)
+        bus.write8(0xFF31, 0xBC)
+
+        bus.write8(0xFF1A, 0x80)
+        bus.write8(0xFF1D, 0xFF)
+        bus.write8(0xFF1E, 0x87)
+        bus.tick(8)
+
+        self.assertEqual(bus.apu.wave_position, 1)
+        self.assertEqual(bus.read8(0xFF3F), 0x9A)
+        bus.write8(0xFF3F, 0x45)
+
+        bus.write8(0xFF1A, 0x00)
+        self.assertEqual(bus.read8(0xFF30), 0x45)
+        self.assertEqual(bus.read8(0xFF31), 0xBC)
+
+    def test_wave_ram_write_while_active_does_not_refresh_sample_buffer(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+        bus.write8(0xFF30, 0x9A)
+
+        bus.write8(0xFF1A, 0x80)
+        bus.write8(0xFF1C, 0x20)
+        bus.write8(0xFF1D, 0xFF)
+        bus.write8(0xFF1E, 0x87)
+        bus.tick(8)
+
+        self.assertEqual(bus.apu.wave_sample_buffer, 0x0A)
+        bus.write8(0xFF30, 0x45)
+
+        self.assertEqual(bus.apu.wave_sample_buffer, 0x0A)
+
+    def test_wave_retrigger_during_fetch_corrupts_first_four_wave_ram_bytes(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+        for index in range(16):
+            bus.write8(0xFF30 + index, index * 0x11)
+
+        bus.write8(0xFF1A, 0x80)
+        bus.write8(0xFF1D, 0xFF)
+        bus.write8(0xFF1E, 0x87)
+        bus.tick(20)
+
+        self.assertEqual(bus.apu.wave_position, 7)
+        bus.write8(0xFF1E, 0x87)
+
+        bus.write8(0xFF1A, 0x00)
+        self.assertEqual(
+            [bus.read8(0xFF30 + index) for index in range(8)],
+            [0x44, 0x55, 0x66, 0x77, 0x44, 0x55, 0x66, 0x77],
+        )
+
+    def test_fresh_wave_trigger_during_future_fetch_timing_does_not_corrupt_wave_ram(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+        for index in range(16):
+            bus.write8(0xFF30 + index, index * 0x11)
+
+        bus.write8(0xFF1A, 0x80)
+        bus.write8(0xFF1D, 0xFF)
+        bus.write8(0xFF1E, 0x87)
+
+        bus.write8(0xFF1A, 0x00)
+        self.assertEqual(
+            [bus.read8(0xFF30 + index) for index in range(4)],
+            [0x00, 0x11, 0x22, 0x33],
+        )
+
+    def test_wave_retrigger_during_first_four_fetches_rewrites_only_first_byte(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF26, 0x80)
+        for index in range(16):
+            bus.write8(0xFF30 + index, index * 0x11)
+
+        bus.write8(0xFF1A, 0x80)
+        bus.write8(0xFF1D, 0xFF)
+        bus.write8(0xFF1E, 0x87)
+        bus.tick(12)
+
+        self.assertEqual(bus.apu.wave_position, 3)
+        bus.write8(0xFF1E, 0x87)
+
+        bus.write8(0xFF1A, 0x00)
+        self.assertEqual(
+            [bus.read8(0xFF30 + index) for index in range(4)],
+            [0x22, 0x11, 0x22, 0x33],
+        )
 
     def test_wave_ram_access_is_normal_with_dac_on_before_trigger(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
@@ -626,7 +725,10 @@ class APUTests(unittest.TestCase):
         self.assertEqual(bus.apu.sample_channels()[2], 0)
         self.assertEqual(bus.apu.wave_position, 0)
 
-        bus.tick(2)
+        bus.tick(7)
+        self.assertEqual(bus.apu.wave_position, 0)
+
+        bus.tick(1)
 
         self.assertEqual(bus.apu.wave_position, 1)
         self.assertEqual(bus.apu.sample_channels()[2], 12)
@@ -648,7 +750,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF1D, 0xFF)
         bus.write8(0xFF1E, 0x87)
 
-        bus.tick(5)
+        bus.tick(11)
 
         self.assertEqual(bus.apu.wave_position, 2)
         self.assertEqual(bus.apu.frequency_timers[2], 1)
@@ -666,7 +768,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF1D, 0xFF)
         bus.write8(0xFF1E, 0x87)
 
-        bus.tick(2)
+        bus.tick(8)
 
         self.assertEqual(bus.apu.wave_position, 1)
         self.assertEqual(bus.apu.wave_sample_buffer, 12)
@@ -682,7 +784,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF1C, 0x20)
         bus.write8(0xFF1D, 0xFF)
         bus.write8(0xFF1E, 0x87)
-        bus.tick(2)
+        bus.tick(8)
         self.assertEqual(bus.apu.sample_channels()[2], 11)
 
         bus.write8(0xFF1E, 0x87)

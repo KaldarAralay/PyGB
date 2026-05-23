@@ -17,6 +17,9 @@ NR50 = 0x24
 NR51 = 0x25
 WAVE_RAM_START = 0x30
 WAVE_RAM_END = 0x3F
+DMG_WAVE_RAM_ACCESS_WINDOW_CYCLES = 1
+DMG_WAVE_TRIGGER_DELAY_CYCLES = 6
+DMG_WAVE_RETRIGGER_CORRUPTION_DELAY_CYCLES = 2
 UNUSED_AUDIO_REGISTERS = {0x15, 0x1F, *range(0x27, 0x30)}
 
 TRIGGER_REGISTERS = {
@@ -209,6 +212,8 @@ class APU:
         self.duty_positions = [0, 0]
         self.wave_position = 0
         self.wave_sample_buffer = 0
+        self._wave_ram_access_offset: int | None = None
+        self._wave_ram_access_cycles_remaining = 0
         self.noise_lfsr = 0x7FFF
         self._pending_noise_cycles = 0
         self._pending_noise_lfsr_steps = 0
@@ -234,7 +239,10 @@ class APU:
             return 0xFF
         if WAVE_RAM_START <= offset <= WAVE_RAM_END:
             if self._wave_channel_active():
-                return 0xFF
+                access_offset = self._active_wave_ram_access_offset()
+                if access_offset is None:
+                    return 0xFF
+                return self.bus.io[access_offset]
             return self.bus.io[offset]
         return self.bus.io[offset] | READ_MASKS.get(offset, 0x00)
 
@@ -248,6 +256,10 @@ class APU:
             return
         if WAVE_RAM_START <= offset <= WAVE_RAM_END:
             if self._wave_channel_active():
+                access_offset = self._active_wave_ram_access_offset()
+                if access_offset is not None:
+                    self._profile_register_write()
+                    self.bus.io[access_offset] = value
                 return
             self._profile_register_write()
             self.bus.io[offset] = value
@@ -493,11 +505,13 @@ class APU:
         self.duty_positions = [0, 0]
         self.wave_position = 0
         self.wave_sample_buffer = 0
+        self._clear_wave_ram_access_window()
         self.noise_lfsr = 0x7FFF
         self._pending_noise_cycles = 0
         self._pending_noise_lfsr_steps = 0
 
     def _trigger_channel(self, channel: int) -> None:
+        was_channel_active = self._wave_channel_active() if channel == 2 else False
         if self.length_timers[channel] == 0:
             self.length_timers[channel] = LENGTH_MAX[channel]
             if self.length_enabled[channel] and not self._next_frame_step_clocks_length():
@@ -508,6 +522,8 @@ class APU:
             self._channel_output_enabled[channel] = True
         else:
             self._disable_channel(channel)
+        if channel == 2 and was_channel_active:
+            self._corrupt_wave_ram_on_active_retrigger()
         if channel == 0:
             self._restart_sweep()
         reload_cycles = self._frequency_timer_reload(channel)
@@ -515,10 +531,13 @@ class APU:
             self.frequency_timers[channel] = 0
         elif channel in {0, 1}:
             self.frequency_timers[channel] = reload_cycles + (self.frequency_timers[channel] & 0x03)
+        elif channel == 2:
+            self.frequency_timers[channel] = reload_cycles + DMG_WAVE_TRIGGER_DELAY_CYCLES
         else:
             self.frequency_timers[channel] = reload_cycles
         if channel == 2:
             self.wave_position = 0
+            self._clear_wave_ram_access_window()
         elif channel == 3:
             self.noise_lfsr = 0x7FFF
             self._pending_noise_cycles = 0
@@ -541,6 +560,8 @@ class APU:
             self._profile_channel_disables += 1
         self.channel_active &= ~(1 << channel)
         self._channel_output_enabled[channel] = False
+        if channel == 2:
+            self._clear_wave_ram_access_window()
         if channel == 3:
             self._pending_noise_cycles = 0
             self._pending_noise_lfsr_steps = 0
@@ -604,6 +625,67 @@ class APU:
 
     def _wave_channel_active(self) -> bool:
         return self.powered and bool(self._channel_output_enabled[2])
+
+    def _active_wave_ram_access_offset(self) -> int | None:
+        if self._wave_ram_access_cycles_remaining <= 0:
+            return None
+        return self._wave_ram_access_offset
+
+    def _clear_wave_ram_access_window(self) -> None:
+        self._wave_ram_access_offset = None
+        self._wave_ram_access_cycles_remaining = 0
+
+    def _age_wave_ram_access_window(self, cycles: int) -> None:
+        if self._wave_ram_access_cycles_remaining <= 0:
+            self._clear_wave_ram_access_window()
+            return
+        self._wave_ram_access_cycles_remaining -= cycles
+        if self._wave_ram_access_cycles_remaining <= 0:
+            self._clear_wave_ram_access_window()
+
+    def _open_wave_ram_access_window(
+        self,
+        access_offset: int,
+        *,
+        cycles_after_access: int,
+    ) -> None:
+        remaining = DMG_WAVE_RAM_ACCESS_WINDOW_CYCLES - cycles_after_access
+        if remaining <= 0:
+            self._clear_wave_ram_access_window()
+            return
+        self._wave_ram_access_offset = access_offset
+        self._wave_ram_access_cycles_remaining = remaining
+
+    def _corrupt_wave_ram_on_active_retrigger(self) -> None:
+        access_offset = self._wave_ram_access_offset_after_cycles(
+            DMG_WAVE_RETRIGGER_CORRUPTION_DELAY_CYCLES
+        )
+        if access_offset is None:
+            return
+        index = access_offset - WAVE_RAM_START
+        if index < 4:
+            self.bus.io[WAVE_RAM_START] = self.bus.io[access_offset]
+            return
+        source = WAVE_RAM_START + (index & 0x0C)
+        self.bus.io[WAVE_RAM_START : WAVE_RAM_START + 4] = self.bus.io[
+            source : source + 4
+        ]
+
+    def _wave_ram_access_offset_after_cycles(self, cycles: int) -> int | None:
+        if not self._wave_channel_active():
+            return None
+        timer = self.frequency_timers[2]
+        if timer <= 0 or cycles < timer:
+            return None
+        reload_cycles = self._frequency_timer_reload(2)
+        if reload_cycles is None:
+            return None
+        elapsed_after_first_tick = cycles - timer
+        if elapsed_after_first_tick % reload_cycles != 0:
+            return None
+        steps = 1 + elapsed_after_first_tick // reload_cycles
+        wave_position = (self.wave_position + steps) & 0x1F
+        return WAVE_RAM_START + (wave_position // 2)
 
     def _write_length_register(self, channel: int, value: int) -> None:
         max_length = LENGTH_MAX[channel]
@@ -804,15 +886,24 @@ class APU:
             if cycles >= timer:
                 elapsed_after_first_tick = cycles - timer
                 steps = 1 + elapsed_after_first_tick // reload_cycles
-                timer = reload_cycles - (elapsed_after_first_tick % reload_cycles)
+                cycles_after_last_access = elapsed_after_first_tick % reload_cycles
+                timer = reload_cycles - cycles_after_last_access
                 self.wave_position = (self.wave_position + steps) & 0x1F
-                sample_byte = io[WAVE_RAM_START + (self.wave_position // 2)]
+                access_offset = WAVE_RAM_START + (self.wave_position // 2)
+                sample_byte = io[access_offset]
                 self.wave_sample_buffer = (
                     sample_byte & 0x0F if self.wave_position & 1 else sample_byte >> 4
                 )
+                self._open_wave_ram_access_window(
+                    access_offset,
+                    cycles_after_access=cycles_after_last_access,
+                )
             else:
                 timer -= cycles
+                self._age_wave_ram_access_window(cycles)
             timers[2] = timer
+        else:
+            self._age_wave_ram_access_window(cycles)
 
         if defer_ch3:
             self._pending_noise_cycles += cycles

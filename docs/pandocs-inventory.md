@@ -27,14 +27,14 @@ The biggest remaining gaps versus Pan Docs are not "can a ROM boot?" gaps anymor
 
 | Gate | Current result |
 | --- | --- |
-| Unit suite | `343 tests`, `OK` on 2026-05-23. |
+| Unit suite | `349 tests`, `OK` on 2026-05-23. |
 | CPU ROM gate | `scripts\verify_cpu.py` passes Blargg individual `cpu_instrs` ROMs and combined `cpu_instrs.gb`. |
-| APU ROM gate | `scripts\verify_apu.py` tracks Blargg `dmg_sound`: 9 passing ROMs and 3 known CH3 wave-RAM `XFAIL` cases. |
+| APU ROM gate | `scripts\verify_apu.py` passes all 12 single Blargg `dmg_sound` ROMs, including CH3 wave-RAM edge cases. |
 | PPU strict gate | `scripts\verify_ppu.py --strict --max-steps 3000000` covers `dmg-acid2`, current Mooneye PPU tests, and selected Mealybug image cases. |
 | Pokemon Red smoke | `scripts\verify_pokemon_red.py` covers headless smoke, mapper probe, and save round-trip. |
 | Oak's Lab encyclopedia oracle | `scripts\verify_oak_encyclopedia_oracle.py`: crop `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F` match PyBoy. |
 | Sprite-heavy scene oracle | `scripts\verify_pokemon_red_sprite_scene_oracle.py`: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes. |
-| Automated Pokemon Red performance gate | `scripts\verify_pokemon_red_performance.py`: text `run_fps=97.08`; sprites `run_fps=79.68`; sprites with headless audio output `run_fps=67.58`, `apu_dropped_samples=0`; deterministic frame/instruction/cycle totals matched exactly. |
+| Automated Pokemon Red performance gate | `scripts\verify_pokemon_red_performance.py`: text `run_fps=93.30`; sprites `run_fps=77.96`; sprites with headless audio output `run_fps=66.19`, `apu_dropped_samples=0`; deterministic frame/instruction/cycle totals matched exactly. |
 
 ## Pan Docs Coverage Table
 
@@ -50,7 +50,7 @@ The biggest remaining gaps versus Pan Docs are not "can a ROM boot?" gaps anymor
 | LCD control/status and rendering | `ppu.py` implements LCD modes, LY/LYC/STAT, VBlank, line 153, DMG STAT quirk, LCD enable/disable, BG/window/OBJ rendering, palettes, scroll, priority, 8x16 sprites, flips, OAM selection, and selected mode-3 register effects. | Partial | Full per-dot FIFO behavior and broader raster test coverage remain the largest visual-accuracy gaps. |
 | OAM DMA and OAM access | `bus.py` and `ppu.py` model FF46 DMA timing, bus blocking, HRAM exception, OAM access restrictions, sprite hiding during DMA, and selected mid-frame DMA effects. | Partial | More edge coverage for exact corruption behavior and hardware revision differences. |
 | Pixel FIFO | The renderer has a segmented/timing-aware model with many targeted mode-3 tests for scroll, window, palette, LCDC, OBJ, and fetch-boundary behavior. | Partial | It is not a complete Pan Docs FIFO implementation; candidate Mealybug cases remain diagnostic. |
-| APU/audio | `apu.py` and `audio.py` cover NR52 power, register reads/writes, DAC-gated channels, triggers, length, envelope, sweep, pulse/wave/noise timers, CH3 wave RAM behavior, CH4 LFSR, mixer, high-pass filter, sample buffering, WAV output, live waveOut playback, deterministic WAV identity, and Blargg `dmg_sound` tracking. | Partial | Full `dmg_sound` pass, stricter APU suites, analog filtering accuracy, obscure trigger/sweep/envelope quirks, and latency tuning. |
+| APU/audio | `apu.py` and `audio.py` cover NR52 power, register reads/writes, DAC-gated channels, triggers, length, envelope, sweep, pulse/wave/noise timers, CH3 wave RAM behavior, CH4 LFSR, mixer, high-pass filter, sample buffering, WAV output, live waveOut playback, deterministic WAV identity, and a passing Blargg `dmg_sound` single-ROM lane. | Partial | Stricter APU suites, analog filtering accuracy, broader audio oracles, obscure trigger/sweep/envelope quirks, and latency tuning. |
 | Boot ROM and power-up | Optional user-supplied DMG boot ROM mapping and one-way FF50 unmapping exist; post-boot defaults are tested. | Partial | No bundled boot ROM, no exact power-up randomness/boot process modeling, no CGB boot flow. |
 | CGB registers and mode | CGB-only IO is mostly inert on DMG; KEY1 has limited STOP/speed-switch state handling. | Pending as a mode | No CGB renderer, palettes, VRAM/WRAM banking, HDMA, double-speed timing model, CGB OAM priority, or CGB boot behavior. |
 | SGB | No SGB mode. | Pending | SGB command packets, borders, palettes, multiplayer input, and SNES-side behavior are not implemented. |
@@ -62,7 +62,7 @@ The biggest remaining gaps versus Pan Docs are not "can a ROM boot?" gaps anymor
 Highest current risk:
 
 - PPU FIFO and raster completeness. The selected gate is strong, but Pan Docs describes many pixel-fetcher/FIFO interactions that are only partially represented.
-- Audio accuracy. The digital APU is functional and audible, and now has Blargg `dmg_sound` suite tracking with the length/power sequencing ROMs passing; remaining work is CH3 wave-RAM behavior and better analog behavior.
+- Audio accuracy. The digital APU is functional and audible, and the Blargg `dmg_sound` single-ROM lane passes; remaining work is stricter suite coverage, better analog behavior, and latency polish.
 - Optimization correctness outside covered Pokemon Red windows. Current hot paths are guarded and exact-vs-fast tested for important branches, but new hot paths should follow the same standard.
 
 Medium current risk:
@@ -81,7 +81,7 @@ Not currently in scope:
 ## Practical Next Goals
 
 1. Expand the Pokemon Red performance gate with captured live-window profile fixtures once the preferred log capture workflow is stable.
-2. Harden the APU against the tracked Blargg `dmg_sound` `XFAIL` cases while keeping the current WAV identity checks for regression safety.
+2. Expand APU validation beyond Blargg `dmg_sound` with stricter timing suites and audio-oracle checks while keeping the current WAV identity checks for regression safety.
 3. Broaden the PPU gate one case at a time, especially around FIFO and mid-scanline behavior.
 4. Add a second commercial ROM as a real gate, with scripted input, save behavior, visual crop/oracle, and performance criteria.
 5. Start CGB only after the DMG visual/audio gates stay stable, because CGB touches memory banking, palettes, DMA, CPU speed, and PPU priority all at once.

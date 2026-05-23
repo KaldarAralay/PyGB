@@ -65,7 +65,7 @@ class ApuVerifierTests(unittest.TestCase):
         self.assertFalse(passed)
         self.assertTrue(failed)
 
-    def test_evaluate_results_tracks_expected_pass_xfail_and_xpass(self) -> None:
+    def test_evaluate_results_tracks_expected_pass_and_unexpected_failures(self) -> None:
         expected_pass_failure = ApuRomResult(
             name="01-registers.gb",
             path=Path("01-registers.gb"),
@@ -78,9 +78,9 @@ class ApuVerifierTests(unittest.TestCase):
             cycles=4,
             output="Failed",
         )
-        known_failure = ApuRomResult(
-            name="09-wave read while on.gb",
-            path=Path("09-wave read while on.gb"),
+        unexpected_failure = ApuRomResult(
+            name="future-rom.gb",
+            path=Path("future-rom.gb"),
             passed=False,
             failed=True,
             timed_out=False,
@@ -90,21 +90,9 @@ class ApuVerifierTests(unittest.TestCase):
             cycles=4,
             output="Failed",
         )
-        unexpected_pass = ApuRomResult(
-            name="10-wave trigger while on.gb",
-            path=Path("10-wave trigger while on.gb"),
-            passed=True,
-            failed=False,
-            timed_out=False,
-            status_code=0,
-            signature_present=True,
-            instructions=1,
-            cycles=4,
-            output="Passed",
-        )
 
         failures = evaluate_results(
-            [expected_pass_failure, known_failure, unexpected_pass],
+            [expected_pass_failure, unexpected_failure],
             strict=False,
             allow_xpass=False,
         )
@@ -113,14 +101,32 @@ class ApuVerifierTests(unittest.TestCase):
             failures,
             [
                 "01-registers.gb: expected PASS, got fail",
-                "10-wave trigger while on.gb: XPASS, update EXPECTED_PASS/known-failure list",
+                "future-rom.gb: unexpected fail",
             ],
         )
 
-    def test_allow_xpass_accepts_known_failure_improvement(self) -> None:
+    def test_strict_treats_unlisted_rom_as_expected_pass(self) -> None:
+        unexpected_failure = ApuRomResult(
+            name="future-rom.gb",
+            path=Path("future-rom.gb"),
+            passed=False,
+            failed=True,
+            timed_out=False,
+            status_code=1,
+            signature_present=True,
+            instructions=1,
+            cycles=4,
+            output="Failed",
+        )
+
+        failures = evaluate_results([unexpected_failure], strict=True, allow_xpass=False)
+
+        self.assertEqual(failures, ["future-rom.gb: expected PASS, got fail"])
+
+    def test_unlisted_pass_is_accepted_without_known_failure(self) -> None:
         unexpected_pass = ApuRomResult(
-            name="10-wave trigger while on.gb",
-            path=Path("10-wave trigger while on.gb"),
+            name="future-rom.gb",
+            path=Path("future-rom.gb"),
             passed=True,
             failed=False,
             timed_out=False,

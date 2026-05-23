@@ -38,14 +38,13 @@ EXPECTED_PASS = {
     "06-overflow on trigger.gb",
     "07-len sweep period sync.gb",
     "08-len ctr during power.gb",
+    "09-wave read while on.gb",
+    "10-wave trigger while on.gb",
     "11-regs after power.gb",
+    "12-wave write while on.gb",
 }
 
-KNOWN_FAILURE_REASONS = {
-    "09-wave read while on.gb": "CH3 wave RAM reads while the channel is active are still incomplete.",
-    "10-wave trigger while on.gb": "CH3 retrigger behavior while active is still incomplete.",
-    "12-wave write while on.gb": "CH3 wave RAM writes while the channel is active are still incomplete.",
-}
+KNOWN_FAILURE_REASONS: dict[str, str] = {}
 
 DMG_SOUND_SIGNATURE = (0xDE, 0xB0, 0x61)
 RESULT_STATUS_ADDR = 0xA000
@@ -133,12 +132,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Treat known XFail cases as failures until the full suite passes.",
+        help="Treat every selected ROM as expected to pass, including any future unlisted ROMs.",
     )
     parser.add_argument(
         "--allow-xpass",
         action="store_true",
-        help="Do not fail if a known XFail ROM unexpectedly passes.",
+        help="Do not fail if a future known-failure ROM unexpectedly passes.",
     )
     parser.add_argument("--json-output", type=Path, help="Write result details to JSON.")
     parser.add_argument("--print-json", action="store_true", help="Print result JSON.")
