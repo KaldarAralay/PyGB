@@ -6,7 +6,7 @@ This document is the active roadmap. Historical Stage 1 CPU evidence is preserve
 
 ## Current State
 
-GBemu is now a playable DMG emulator for the current primary real-ROM target, Pokemon Red. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, and rolling frame/audio profiling.
+GBemu is now a playable DMG emulator for the current primary real-ROM target, Pokemon Red, with Super Mario Land added as a quick early-action performance smoke target. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, and rolling frame/audio profiling.
 
 The project is not cycle-perfect and not yet a broad commercial compatibility emulator. The strongest next work is to keep adding evidence while improving accuracy and tail-latency behavior.
 
@@ -59,11 +59,12 @@ Done:
 - Tkinter window mode with keyboard input, pause/reset/trace/audio toggles, frame pacing, and live audio.
 - Rolling window profiler with run/draw/audio timing, CPU/bus/PPU/APU stats, audio queue range, worst-frame spike fields, and coarse spike cause attribution.
 - Automated Pokemon Red headless performance gate for fixed text, sprite-heavy, and sprite-heavy-with-audio scenarios, including parsed metrics and deterministic frame/instruction/cycle drift checks.
+- Super Mario Land early-1-1 action performance gate with fixed headless metrics, headless audio sample-drop checks, and live `window-profile` capture validation.
 - Pokemon Red frame pacing round 1: worst non-startup live windows now clear 50 fps with zero audio underruns/drops in the latest profile.
 
 Remaining:
 
-- Add automated capture for window-profile summaries so live performance gates can run without manual log inspection.
+- Add more saved window-profile fixtures and scripted input/playback scenarios for live gameplay.
 - Add more scripted input/playback scenarios for menus and gameplay.
 - Consider optional alternate frontends later if Tkinter becomes the limiting factor.
 
@@ -118,6 +119,7 @@ Run these before treating a compatibility or timing change as safe:
 python -B scripts\verify_oak_encyclopedia_oracle.py
 python -B scripts\verify_pokemon_red_sprite_scene_oracle.py
 python -B scripts\verify_pokemon_red_performance.py --json-output qa-output\pokemon-red-performance-gate.json
+python -B scripts\verify_super_mario_land_performance.py --json-output qa-output\super-mario-land-performance-gate.json
 ```
 
 For audio-sensitive changes, also compare a fixed headless/live WAV capture:
@@ -132,6 +134,7 @@ For performance-sensitive changes, profile Pokemon Red:
 ```powershell
 python -B main.py .\roms\PRed.gb --window --audio --max-instructions 0 --frames 1800 --profile-window --profile-window-interval 60
 python -B scripts\verify_pokemon_red_performance.py --window-profile-log qa-output\pokemon-red-window-profile.log
+python -B scripts\verify_super_mario_land_performance.py --scenario action-audio --run-live-window --json-output qa-output\super-mario-land-live-performance-gate.json
 ```
 
 Current target thresholds:
@@ -143,17 +146,17 @@ Current target thresholds:
 
 ## Recommended Next Goals
 
-### 1. Add Live-Window Capture To The Performance Gate
+### 1. Save Live-Window Profile Fixtures
 
-The headless performance gate now runs fixed text, sprite-heavy, and sprite-heavy-with-audio scenarios, parses structured metrics, checks deterministic frame/instruction/cycle totals, and fails on FPS or headless APU sample-drop regressions.
+The headless performance gates now run fixed Pokemon Red text/sprite/audio scenarios and a Super Mario Land early-action scenario. The SML gate can also open a live window, capture `window-profile` lines, and fail on FPS, audio queue, underrun/drop, or APU sample-drop regressions.
 
-The remaining performance-gate work is live-window capture. The parser already accepts saved `window-profile` logs and fails if:
+The remaining workflow work is keeping representative live-window logs as fixtures. The parser already accepts saved `window-profile` logs and fails if:
 
 - Any non-startup 60-frame window drops below the chosen FPS target.
 - Audio queue dips below the configured threshold.
 - Any audio underrun/drop counter increments.
 
-The next step is to capture those live logs reproducibly enough that the parser can run without manual copy/paste.
+The next step is to store a small set of representative live logs for Pokemon Red and Super Mario Land so parser validation can run without opening a window every time.
 
 ### 2. Expand APU Accuracy Beyond Blargg `dmg_sound`
 
@@ -169,7 +172,7 @@ Suggested focus:
 
 ### 3. Expand Commercial ROM Coverage
 
-Pokemon Red is the current primary target. Add one new title at a time and define objective checks for each:
+Pokemon Red is the current primary target, and Super Mario Land is now the quick action/performance smoke target. Add one new title at a time and define objective checks for each:
 
 - Boot/title screen frames.
 - Save-RAM behavior if applicable.
@@ -177,7 +180,7 @@ Pokemon Red is the current primary target. Add one new title at a time and defin
 - 600-1800 frame performance sample.
 - Optional WAV identity sample if audio is relevant.
 
-Dr. Mario is the next obvious candidate because it already has user-reported visual smoke success.
+Dr. Mario is the next obvious candidate for a scripted gate because it already has user-reported visual smoke success.
 
 ### 4. Continue PPU FIFO/Raster Work
 

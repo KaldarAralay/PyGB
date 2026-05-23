@@ -1,6 +1,6 @@
 # GBemu
 
-GBemu is a DMG-only Game Boy emulator written in Python. It now runs real commercial ROMs well enough for interactive testing: Pokemon Red is the primary gameplay regression target, Dr. Mario is a visual smoke target, and the CPU/PPU/APU subsystems have automated regression gates.
+GBemu is a DMG-only Game Boy emulator written in Python. It now runs real commercial ROMs well enough for interactive testing: Pokemon Red is the primary gameplay regression target, Super Mario Land is an early-action performance smoke target, Dr. Mario is a visual smoke target, and the CPU/PPU/APU subsystems have automated regression gates.
 
 Current verified status: May 23, 2026.
 
@@ -15,6 +15,7 @@ Current verified status: May 23, 2026.
 - APU register/channel model with pulse, wave, noise, length, envelope, sweep, DAC gating, mixer, initial high-pass filtering, sample buffering, WAV dumps, live Windows audio playback, deterministic WAV identity checks, and Blargg `dmg_sound` regression coverage.
 - Tkinter window mode with frame pacing, live audio, pause/reset/trace toggles, save-RAM lifecycle, and rolling frame/audio spike profiling.
 - Pokemon Red performance hot paths for heavy MBC3/LCD-off copy/fill/decompression frames, with exact-vs-fast unit coverage for shadow-OAM/object helpers, PyBoy visual/OAM oracles for current sprite regressions, and an automated headless performance gate.
+- Super Mario Land scripted early-1-1 action performance coverage with fixed headless metrics and optional live `window-profile` capture validation.
 
 ## Quick Start
 
@@ -46,6 +47,12 @@ Run Dr. Mario, the current visual smoke target:
 
 ```powershell
 python main.py .\roms\DrMario.gb --window --max-instructions 0
+```
+
+Run Super Mario Land, the current quick action/performance smoke target:
+
+```powershell
+python main.py .\roms\SML.gb --window --audio --max-instructions 0
 ```
 
 The embedded verification runtime does not include Tkinter. Use system `python` for `--window`; use `.\.tools\python-3.12.4-embed-amd64\python.exe` for headless tests and verifiers.
@@ -144,7 +151,7 @@ Run the full unit suite:
 Latest full suite result:
 
 ```text
-Ran 349 tests in 0.519s
+Ran 351 tests in 0.519s
 OK
 ```
 
@@ -193,12 +200,25 @@ The gate runs fixed text, sprite-heavy, and sprite-heavy-with-audio headless sce
 python -B scripts\verify_pokemon_red_performance.py --window-profile-log qa-output\pokemon-red-window-profile.log
 ```
 
+Run the Super Mario Land early-action performance gate:
+
+```powershell
+python -B scripts\verify_super_mario_land_performance.py --json-output qa-output\super-mario-land-performance-gate.json
+```
+
+Run the same SML action path with live Tkinter/audio `window-profile` capture:
+
+```powershell
+python -B scripts\verify_super_mario_land_performance.py --scenario action-audio --run-live-window --json-output qa-output\super-mario-land-live-performance-gate.json
+```
+
 Latest sprite-scene oracle and performance-gate evidence:
 
 - Oak's Lab encyclopedia crop: `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F`.
 - Sprite-heavy saved-game scene: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes.
 - Blargg `dmg_sound`: all 12 single ROMs pass in the default lane, including the CH3 wave-RAM edge cases.
-- Performance gate: text `run_fps=93.30`; sprites `run_fps=77.96`; sprites with headless audio output `run_fps=66.19`, `apu_dropped_samples=0`.
+- Performance gate: text `run_fps=92.59`; sprites `run_fps=74.38`; sprites with headless audio output `run_fps=64.88`, `apu_dropped_samples=0`.
+- Super Mario Land action gate: headless action `run_fps=80.89`; action with headless audio output `run_fps=67.41`, `apu_dropped_samples=0`. Latest live action capture checked 10 non-startup profile windows with min `wall_fps=46.84`, min queue `33.5 ms`, and zero audio underruns/drops.
 
 Verify headless/live WAV identity for a fixed Pokemon Red run:
 
@@ -219,7 +239,7 @@ SHA-256: 6575f192cdea8ed0bf84c1ee775add94035c7e556a36c2a094a1dbb2f052b10b
 - This is still DMG-only; CGB mode is not implemented.
 - PPU coverage is strong for the selected strict gate, but the emulator still does not model a complete per-dot pixel FIFO or every possible mid-scanline raster edge case.
 - APU/audio is functional, deterministic for current PCM identity checks, and covered by a fully passing Blargg `dmg_sound` single-ROM lane, but mature analog filtering and stricter APU-suite compatibility are still pending.
-- Commercial compatibility is early. Pokemon Red is the primary tested gameplay target; Dr. Mario is a visual smoke target. Other games should be treated as exploratory until they are added to the compatibility matrix.
-- Performance includes several real-ROM-specific hot paths. They preserve current instruction/cycle/audio identity for the covered Pokemon Red windows, but broader optimization should continue to be measured with verification gates on.
+- Commercial compatibility is early. Pokemon Red is the primary tested gameplay target; Super Mario Land is an action/performance smoke target; Dr. Mario is a visual smoke target. Other games should be treated as exploratory until they are added to the compatibility matrix.
+- Performance includes several real-ROM-specific hot paths. They preserve current instruction/cycle/audio identity for the covered Pokemon Red and Super Mario Land windows, but broader optimization should continue to be measured with verification gates on.
 
 Detailed compatibility evidence lives in `docs\compatibility.md`; the Pan Docs inventory lives in `docs\pandocs-inventory.md`; the active roadmap lives in `docs\next-stages.md`.

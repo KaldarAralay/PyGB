@@ -19,7 +19,7 @@ Primary Pan Docs references:
 
 ## Snapshot
 
-GBemu is currently a playable, DMG-only emulator with strong evidence for Pokemon Red, Dr. Mario smoke coverage, Blargg CPU coverage, selected PPU suite coverage, Blargg `dmg_sound` APU tracking, live display/audio, and guarded Pokemon Red performance fast paths.
+GBemu is currently a playable, DMG-only emulator with strong evidence for Pokemon Red, Super Mario Land action/performance smoke coverage, Dr. Mario smoke coverage, Blargg CPU coverage, selected PPU suite coverage, Blargg `dmg_sound` APU tracking, live display/audio, and guarded real-ROM performance gates.
 
 The biggest remaining gaps versus Pan Docs are not "can a ROM boot?" gaps anymore. They are hardware-completeness gaps: full pixel FIFO behavior, broader PPU timing ROM coverage, full APU suite compatibility and analog accuracy, CGB mode, SGB behavior, real serial peer/link behavior, and specialty cartridge hardware.
 
@@ -27,14 +27,15 @@ The biggest remaining gaps versus Pan Docs are not "can a ROM boot?" gaps anymor
 
 | Gate | Current result |
 | --- | --- |
-| Unit suite | `349 tests`, `OK` on 2026-05-23. |
+| Unit suite | `351 tests`, `OK` on 2026-05-23. |
 | CPU ROM gate | `scripts\verify_cpu.py` passes Blargg individual `cpu_instrs` ROMs and combined `cpu_instrs.gb`. |
 | APU ROM gate | `scripts\verify_apu.py` passes all 12 single Blargg `dmg_sound` ROMs, including CH3 wave-RAM edge cases. |
 | PPU strict gate | `scripts\verify_ppu.py --strict --max-steps 3000000` covers `dmg-acid2`, current Mooneye PPU tests, and selected Mealybug image cases. |
 | Pokemon Red smoke | `scripts\verify_pokemon_red.py` covers headless smoke, mapper probe, and save round-trip. |
 | Oak's Lab encyclopedia oracle | `scripts\verify_oak_encyclopedia_oracle.py`: crop `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F` match PyBoy. |
 | Sprite-heavy scene oracle | `scripts\verify_pokemon_red_sprite_scene_oracle.py`: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes. |
-| Automated Pokemon Red performance gate | `scripts\verify_pokemon_red_performance.py`: text `run_fps=93.30`; sprites `run_fps=77.96`; sprites with headless audio output `run_fps=66.19`, `apu_dropped_samples=0`; deterministic frame/instruction/cycle totals matched exactly. |
+| Automated Pokemon Red performance gate | `scripts\verify_pokemon_red_performance.py`: text `run_fps=92.59`; sprites `run_fps=74.38`; sprites with headless audio output `run_fps=64.88`, `apu_dropped_samples=0`; deterministic frame/instruction/cycle totals matched exactly. |
+| Super Mario Land action gate | `scripts\verify_super_mario_land_performance.py`: action `run_fps=80.89`; action with headless audio output `run_fps=67.41`, `apu_dropped_samples=0`; live action capture min `wall_fps=46.84`, min queue `33.5 ms`, and zero audio underruns/drops. |
 
 ## Pan Docs Coverage Table
 
@@ -63,13 +64,13 @@ Highest current risk:
 
 - PPU FIFO and raster completeness. The selected gate is strong, but Pan Docs describes many pixel-fetcher/FIFO interactions that are only partially represented.
 - Audio accuracy. The digital APU is functional and audible, and the Blargg `dmg_sound` single-ROM lane passes; remaining work is stricter suite coverage, better analog behavior, and latency polish.
-- Optimization correctness outside covered Pokemon Red windows. Current hot paths are guarded and exact-vs-fast tested for important branches, but new hot paths should follow the same standard.
+- Optimization correctness outside covered Pokemon Red and Super Mario Land windows. Current hot paths are guarded and exact-vs-fast tested for important branches, but new hot paths should follow the same standard.
 
 Medium current risk:
 
 - Timer/interrupt edge cases around rare write ordering.
 - Mapper edge cases outside common MBC1/MBC2/MBC3/MBC5/HuC1 behavior.
-- Commercial compatibility breadth beyond Pokemon Red and Dr. Mario.
+- Commercial compatibility breadth beyond Pokemon Red, Super Mario Land, and Dr. Mario.
 
 Not currently in scope:
 
@@ -80,8 +81,8 @@ Not currently in scope:
 
 ## Practical Next Goals
 
-1. Expand the Pokemon Red performance gate with captured live-window profile fixtures once the preferred log capture workflow is stable.
+1. Expand live performance capture coverage with saved profile fixtures for Pokemon Red and Super Mario Land once the preferred log capture workflow is stable.
 2. Expand APU validation beyond Blargg `dmg_sound` with stricter timing suites and audio-oracle checks while keeping the current WAV identity checks for regression safety.
 3. Broaden the PPU gate one case at a time, especially around FIFO and mid-scanline behavior.
-4. Add a second commercial ROM as a real gate, with scripted input, save behavior, visual crop/oracle, and performance criteria.
+4. Add another commercial ROM as a real gate, with scripted input, save behavior when applicable, visual crop/oracle, and performance criteria.
 5. Start CGB only after the DMG visual/audio gates stay stable, because CGB touches memory banking, palettes, DMA, CPU speed, and PPU priority all at once.
