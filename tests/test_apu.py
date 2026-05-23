@@ -43,6 +43,77 @@ class APUTests(unittest.TestCase):
         self.assertEqual(bus.read8(0xFF26), 0xF0)
         self.assertEqual(bus.read8(0xFF12), 0xF3)
 
+    def test_nr52_power_on_resets_stopped_frame_sequencer_to_length_before_sweep_phase(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+
+        for start_step in (2, 4, 5):
+            with self.subTest(start_step=start_step):
+                bus.write8(0xFF26, 0x80)
+                bus.apu.frame_sequence_step = start_step
+                bus.apu._frame_sequence_counter = 456
+
+                bus.write8(0xFF26, 0x00)
+                bus.write8(0xFF26, 0x80)
+
+                self.assertEqual(bus.apu.frame_sequence_step, 3)
+                self.assertEqual(bus.apu._frame_sequence_counter, 456)
+
+    def test_powered_off_apu_does_not_advance_frame_phase_or_clock_lengths(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+
+        bus.apu.frame_sequence_step = 1
+        bus.apu._frame_sequence_counter = FRAME_SEQUENCER_PERIOD - 4
+        bus.apu.length_timers[0] = 1
+        bus.apu.length_enabled[0] = True
+
+        bus.write8(0xFF26, 0x00)
+        bus.apu.length_enabled[0] = True
+        bus.tick(4)
+
+        self.assertEqual(bus.apu.frame_sequence_step, 1)
+        self.assertEqual(bus.apu._frame_sequence_counter, FRAME_SEQUENCER_PERIOD - 4)
+        self.assertEqual(bus.apu.length_timers[0], 1)
+
+    def test_div_write_while_powered_off_resets_frame_phase_only(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+
+        bus.write8(0xFF26, 0x00)
+        bus.apu.frame_sequence_step = 1
+        bus.apu._frame_sequence_counter = 123
+        bus.apu.length_timers[0] = 1
+        bus.apu.length_enabled[0] = True
+        bus._system_counter = 0x1000
+        bus.io[0x04] = 0x10
+
+        bus.write8(0xFF04, 0x00)
+
+        self.assertEqual(bus.apu.frame_sequence_step, 1)
+        self.assertEqual(bus.apu._frame_sequence_counter, 0)
+        self.assertEqual(bus.apu.length_timers[0], 1)
+
+    def test_power_off_preserves_internal_length_timers(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+
+        bus.write8(0xFF11, 0xEE)
+        self.assertEqual(bus.apu.length_timers[0], 18)
+
+        bus.write8(0xFF26, 0x00)
+
+        self.assertEqual(bus.apu.length_timers[0], 18)
+        self.assertEqual(bus.read8(0xFF11), 0x3F)
+
+    def test_powered_off_length_register_writes_update_internal_counters_only(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+
+        bus.write8(0xFF26, 0x00)
+        bus.write8(0xFF20, 0xEE)
+        bus.write8(0xFF11, 0xFF)
+
+        self.assertEqual(bus.apu.length_timers[3], 18)
+        self.assertEqual(bus.apu.length_timers[0], 1)
+        self.assertEqual(bus.read8(0xFF20), 0xFF)
+        self.assertEqual(bus.read8(0xFF11), 0x3F)
+
     def test_post_boot_inactive_generation_still_has_dac_bias(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
 
@@ -64,6 +135,7 @@ class APUTests(unittest.TestCase):
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
+        bus.apu.frame_sequence_step = 0
 
         bus.write8(0xFF12, 0xF0)
         bus.write8(0xFF14, 0x80)
@@ -175,6 +247,7 @@ class APUTests(unittest.TestCase):
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
+        bus.apu.frame_sequence_step = 0
         bus.tick(FRAME_SEQUENCER_PERIOD)
 
         bus.write8(0xFF12, 0xF0)
@@ -189,6 +262,7 @@ class APUTests(unittest.TestCase):
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
+        bus.apu.frame_sequence_step = 0
 
         bus.write8(0xFF12, 0xF0)
         bus.write8(0xFF11, 0x3F)
@@ -202,6 +276,7 @@ class APUTests(unittest.TestCase):
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
+        bus.apu.frame_sequence_step = 0
 
         bus.write8(0xFF12, 0xF0)
         bus.write8(0xFF11, 0x3F)
@@ -220,6 +295,7 @@ class APUTests(unittest.TestCase):
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
+        bus.apu.frame_sequence_step = 0
 
         bus.write8(0xFF12, 0xF0)
         bus.write8(0xFF11, 0x3F)
@@ -242,6 +318,7 @@ class APUTests(unittest.TestCase):
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
+        bus.apu.frame_sequence_step = 0
 
         bus.write8(0xFF12, 0xF0)
         bus.write8(0xFF14, 0xC0)
@@ -254,6 +331,7 @@ class APUTests(unittest.TestCase):
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
+        bus.apu.frame_sequence_step = 0
         bus.tick(FRAME_SEQUENCER_PERIOD)
 
         bus.write8(0xFF1A, 0x80)
@@ -282,6 +360,7 @@ class APUTests(unittest.TestCase):
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
+        bus.apu.frame_sequence_step = 0
         bus.tick(FRAME_SEQUENCER_PERIOD * 6)
 
         self.assertEqual(bus.apu.frame_sequence_step, 6)
@@ -346,6 +425,7 @@ class APUTests(unittest.TestCase):
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
+        bus.apu.frame_sequence_step = 0
 
         bus.write8(0xFF10, 0x11)
         bus.write8(0xFF12, 0xF0)
@@ -362,6 +442,7 @@ class APUTests(unittest.TestCase):
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
         bus.write8(0xFF26, 0x00)
         bus.write8(0xFF26, 0x80)
+        bus.apu.frame_sequence_step = 0
 
         bus.write8(0xFF10, 0x19)
         bus.write8(0xFF12, 0xF0)
@@ -851,11 +932,12 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF26, 0x80)
         bus.apu.profile_enabled = True
         bus.apu.set_output_enabled(True)
+        start_step = bus.apu.frame_sequence_step
 
         bus.apu.tick(CPU_CLOCK_HZ)
 
         self.assertEqual(bus.apu.drain_audio_samples(), [(0, 0)] * 4)
-        self.assertEqual(bus.apu.frame_sequence_step, 0)
+        self.assertEqual(bus.apu.frame_sequence_step, start_step)
         profile = bus.apu.consume_profile()
         self.assertEqual(profile.generated_samples, 4)
         self.assertEqual(profile.dropped_samples, 0)

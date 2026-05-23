@@ -27,14 +27,14 @@ The biggest remaining gaps versus Pan Docs are not "can a ROM boot?" gaps anymor
 
 | Gate | Current result |
 | --- | --- |
-| Unit suite | `338 tests`, `OK` on 2026-05-23. |
+| Unit suite | `343 tests`, `OK` on 2026-05-23. |
 | CPU ROM gate | `scripts\verify_cpu.py` passes Blargg individual `cpu_instrs` ROMs and combined `cpu_instrs.gb`. |
-| APU ROM gate | `scripts\verify_apu.py` tracks Blargg `dmg_sound`: 6 passing ROMs and 6 known `XFAIL` cases. |
+| APU ROM gate | `scripts\verify_apu.py` tracks Blargg `dmg_sound`: 9 passing ROMs and 3 known CH3 wave-RAM `XFAIL` cases. |
 | PPU strict gate | `scripts\verify_ppu.py --strict --max-steps 3000000` covers `dmg-acid2`, current Mooneye PPU tests, and selected Mealybug image cases. |
 | Pokemon Red smoke | `scripts\verify_pokemon_red.py` covers headless smoke, mapper probe, and save round-trip. |
 | Oak's Lab encyclopedia oracle | `scripts\verify_oak_encyclopedia_oracle.py`: crop `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F` match PyBoy. |
 | Sprite-heavy scene oracle | `scripts\verify_pokemon_red_sprite_scene_oracle.py`: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes. |
-| Automated Pokemon Red performance gate | `scripts\verify_pokemon_red_performance.py`: text `run_fps=95.92`; sprites `run_fps=76.86`; sprites with headless audio output `run_fps=65.60`, `apu_dropped_samples=0`; deterministic frame/instruction/cycle totals matched exactly. |
+| Automated Pokemon Red performance gate | `scripts\verify_pokemon_red_performance.py`: text `run_fps=97.08`; sprites `run_fps=79.68`; sprites with headless audio output `run_fps=67.58`, `apu_dropped_samples=0`; deterministic frame/instruction/cycle totals matched exactly. |
 
 ## Pan Docs Coverage Table
 
@@ -62,7 +62,7 @@ The biggest remaining gaps versus Pan Docs are not "can a ROM boot?" gaps anymor
 Highest current risk:
 
 - PPU FIFO and raster completeness. The selected gate is strong, but Pan Docs describes many pixel-fetcher/FIFO interactions that are only partially represented.
-- Audio accuracy. The digital APU is functional and audible, and now has Blargg `dmg_sound` suite tracking, but still needs full-suite pass work and better analog behavior.
+- Audio accuracy. The digital APU is functional and audible, and now has Blargg `dmg_sound` suite tracking with the length/power sequencing ROMs passing; remaining work is CH3 wave-RAM behavior and better analog behavior.
 - Optimization correctness outside covered Pokemon Red windows. Current hot paths are guarded and exact-vs-fast tested for important branches, but new hot paths should follow the same standard.
 
 Medium current risk:

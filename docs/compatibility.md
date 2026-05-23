@@ -8,17 +8,17 @@ This matrix tracks evidence in this repository. `Pass` means the target is curre
 
 | Target | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| Unit test suite | Pass | `.\.tools\python-3.12.4-embed-amd64\python.exe -B -m unittest discover -v` | Latest run on 2026-05-23: 338 tests passed. Covers CPU, bus/timers, cartridge mappers, runtime, display/window profiling, joypad, PPU, APU/audio, `dmg-acid2`, exact-vs-fast shadow-OAM helper coverage, performance-gate parsing, and APU verifier parsing. |
+| Unit test suite | Pass | `.\.tools\python-3.12.4-embed-amd64\python.exe -B -m unittest discover -v` | Latest run on 2026-05-23: 343 tests passed. Covers CPU, bus/timers, cartridge mappers, runtime, display/window profiling, joypad, PPU, APU/audio, `dmg-acid2`, exact-vs-fast shadow-OAM helper coverage, performance-gate parsing, and APU verifier parsing. |
 | Blargg `cpu_instrs` individual ROMs `01` through `11` | Pass | `scripts\verify_cpu.py` | Current verifier passes all individual CPU instruction ROMs. |
 | Blargg combined `cpu_instrs.gb` | Pass | `scripts\verify_cpu.py` and direct `main.py --stop-on-serial-result` runs | Current run reaches the serial `Passed` result. |
-| Blargg `dmg_sound` APU ROMs | XFail tracked | `.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_apu.py --json-output qa-output\apu-dmg-sound.json` | Current baseline passes `01-registers`, `02-len ctr`, `03-trigger`, `04-sweep`, `05-sweep details`, and `06-overflow on trigger`. Length/power and CH3 wave-RAM edge cases are tracked as known `XFAIL` results until the APU model is hardened further. |
+| Blargg `dmg_sound` APU ROMs | XFail tracked | `.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_apu.py --json-output qa-output\apu-dmg-sound.json` | Current baseline passes `01-registers`, `02-len ctr`, `03-trigger`, `04-sweep`, `05-sweep details`, `06-overflow on trigger`, `07-len sweep period sync`, `08-len ctr during power`, and `11-regs after power`. CH3 wave-RAM edge cases `09`, `10`, and `12` remain tracked as known `XFAIL` results. |
 | `dmg-acid2` | Pass | Unit test and `scripts\verify_ppu.py --strict` | First completed frame matches Matt Currie's official DMG reference hash `2ba8286c29ae381838c71a88614302ce05f2b26102d1ed8dc51e25f83fcccc67`. |
 | PPU external strict gate | Pass | `.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_ppu.py --strict --max-steps 3000000` | Latest run on 2026-05-22 passed `dmg-acid2`, current Mooneye acceptance/ppu ROMs, and selected Mealybug mode-3 image cases. |
 | Mealybug candidate lane | XFail tracked | `scripts\verify_ppu.py --skip-dmg-acid2 --skip-mooneye --include-mealybug-candidates --max-steps 3000000` | Adjacent FIFO/tile-selection cases remain diagnostic only until a DMG oracle or a CGB PPU path is available for the reference-image ambiguity. |
 | Pokemon Red real-ROM gate | Pass | `scripts\verify_pokemon_red.py`; live profiling command in README | Current MBC3 mapper, save-RAM, 600-frame smoke, live audio, and heavy-window frame pacing are repeatable enough to use as the primary real-ROM regression target. |
 | Pokemon Red Oak encyclopedia PyBoy oracle | Pass | `python -B scripts\verify_oak_encyclopedia_oracle.py` | Latest run: crop `diff_pixels=0`; GBemu and PyBoy OAM tiles both `7C 7D 7E 7F 7C 7D 7E 7F`. |
 | Pokemon Red sprite-heavy PyBoy oracle | Pass | `python -B scripts\verify_pokemon_red_sprite_scene_oracle.py` | Latest run: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes. |
-| Pokemon Red automated performance gate | Pass | `python -B scripts\verify_pokemon_red_performance.py --json-output qa-output\pokemon-red-performance-gate.json` | Latest run: text `run_fps=95.92`; sprites `run_fps=76.86`; sprites with headless audio output `run_fps=65.60`, `apu_dropped_samples=0`; deterministic frame/instruction/cycle totals matched exactly. |
+| Pokemon Red automated performance gate | Pass | `python -B scripts\verify_pokemon_red_performance.py --json-output qa-output\pokemon-red-performance-gate.json` | Latest run: text `run_fps=97.08`; sprites `run_fps=79.68`; sprites with headless audio output `run_fps=67.58`, `apu_dropped_samples=0`; deterministic frame/instruction/cycle totals matched exactly. |
 | Pokemon Red 600-frame WAV identity | Pass | Headless `--dump-audio` vs live `--capture-live-audio` | Latest PCM payloads and WAV params are identical. SHA-256 of PCM: `6575f192cdea8ed0bf84c1ee775add94035c7e556a36c2a094a1dbb2f052b10b`. |
 | Dr. Mario | Playable smoke | User window run; visual smoke command in README | Interactive run has no obvious visual glitches. Keep as smoke coverage until a scripted regression is added. |
 | Other commercial DMG games | Pending | Not yet part of the gate | Add titles one at a time with ROM-specific smoke criteria, save behavior, profiling windows, and audio checks. |
@@ -44,9 +44,9 @@ Headless slices used during optimization:
 - 1080-1140 transition slice: about 66-67 fps after LCD-off copy/fill loop batching.
 - 1500-1560 heavy slice: about 58-59 fps after Pokemon Red hot-path batching.
 - Current automated performance gate:
-  - Text scene: 240 frames, `run_fps=95.92`, `cpu_instr=1564703`, `cpu_cycles=16853764`.
-  - Sprite-heavy scene: 600 frames, `run_fps=76.86`, `cpu_instr=2717563`, `cpu_cycles=42134400`, `ppu_max_sprites=10`, `ppu_sprite_lines=19200`.
-  - Sprite-heavy scene with headless audio output: 600 frames, `run_fps=65.60`, `apu_samples=443012`, `apu_dropped_samples=0`, same deterministic CPU totals.
+  - Text scene: 240 frames, `run_fps=97.08`, `cpu_instr=1564703`, `cpu_cycles=16853764`.
+  - Sprite-heavy scene: 600 frames, `run_fps=79.68`, `cpu_instr=2717563`, `cpu_cycles=42134400`, `ppu_max_sprites=10`, `ppu_sprite_lines=19200`.
+  - Sprite-heavy scene with headless audio output: 600 frames, `run_fps=67.58`, `apu_samples=443012`, `apu_dropped_samples=0`, same deterministic CPU totals.
   - The gate can also parse captured live `window-profile` logs and fail on non-startup FPS, audio queue, underrun, drop, or APU sample-drop regressions.
 
 ## Subsystems

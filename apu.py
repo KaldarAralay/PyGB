@@ -255,6 +255,9 @@ class APU:
         if offset in UNUSED_AUDIO_REGISTERS:
             return
         if not self.powered:
+            if offset in LENGTH_REGISTERS:
+                self._profile_register_write()
+                self._write_length_register(LENGTH_REGISTERS[offset], value)
             return
 
         self._profile_register_write()
@@ -306,20 +309,24 @@ class APU:
         self._advance_core(cycles)
 
     def _advance_core(self, cycles: int) -> None:
-        if cycles <= 0 or not self.powered:
+        if cycles <= 0:
             return
-        if self._quiet_frequency_timers_can_skip():
-            if self._channel_output_enabled[3]:
-                self._pending_noise_cycles += cycles
-        elif self._frequency_timers_can_fast_defer():
-            if self._channel_output_enabled[3]:
-                self._pending_noise_cycles += cycles
-        else:
-            self._tick_frequency_timers(cycles)
+        powered = self.powered
+        if not powered:
+            return
+        if powered:
+            if self._quiet_frequency_timers_can_skip():
+                if self._channel_output_enabled[3]:
+                    self._pending_noise_cycles += cycles
+            elif self._frequency_timers_can_fast_defer():
+                if self._channel_output_enabled[3]:
+                    self._pending_noise_cycles += cycles
+            else:
+                self._tick_frequency_timers(cycles)
         self._frame_sequence_counter += cycles
         while self._frame_sequence_counter >= FRAME_SEQUENCER_PERIOD:
             self._frame_sequence_counter -= FRAME_SEQUENCER_PERIOD
-            self._advance_frame_sequence()
+            self._advance_frame_sequence(clock_units=powered)
 
     def sample_channels(self) -> tuple[int, int, int, int]:
         self._flush_pending_output_cycles()
@@ -460,8 +467,7 @@ class APU:
         elif not was_powered:
             self.bus.io[NR52] = 0x80
             self.channel_active = 0
-            self.frame_sequence_step = 0
-            self._frame_sequence_counter = 0
+            self.frame_sequence_step = 3
         else:
             self.bus.io[NR52] = 0x80 | (self.bus.io[NR52] & 0x0F)
 
@@ -470,10 +476,7 @@ class APU:
             self.bus.io[offset] = 0
         self.bus.io[NR52] = 0
         self.channel_active = 0
-        self.frame_sequence_step = 0
-        self._frame_sequence_counter = 0
         self._reset_output_timing()
-        self.length_timers = [0, 0, 0, 0]
         self.length_enabled = [False, False, False, False]
         self.channel_volumes = [0, 0, 0, 0]
         self._channel_output_enabled = [False, False, False, False]
@@ -632,9 +635,10 @@ class APU:
         if self.frame_sequence_step == 7:
             self._clock_envelopes()
 
-    def _advance_frame_sequence(self) -> None:
+    def _advance_frame_sequence(self, *, clock_units: bool = True) -> None:
         self.frame_sequence_step = (self.frame_sequence_step + 1) & 0x07
-        self._clock_frame_sequencer()
+        if clock_units:
+            self._clock_frame_sequencer()
 
     def _clock_length_timers(self) -> None:
         for channel in range(4):

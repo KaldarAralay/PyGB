@@ -97,7 +97,7 @@ Done:
 - Live audio capture via `--capture-live-audio`.
 - Pokemon Red 600-frame headless/live WAV identity verified byte-for-byte.
 - Default live audio queue tuned for gameplay stability rather than minimum latency.
-- Blargg `dmg_sound` APU ROM-suite lane through `scripts\verify_apu.py`; current baseline passes 6 ROMs and tracks 6 known `XFAIL` cases.
+- Blargg `dmg_sound` APU ROM-suite lane through `scripts\verify_apu.py`; current baseline passes 9 ROMs and tracks 3 known CH3 wave-RAM `XFAIL` cases.
 
 Remaining:
 

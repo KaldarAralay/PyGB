@@ -36,14 +36,14 @@ EXPECTED_PASS = {
     "04-sweep.gb",
     "05-sweep details.gb",
     "06-overflow on trigger.gb",
+    "07-len sweep period sync.gb",
+    "08-len ctr during power.gb",
+    "11-regs after power.gb",
 }
 
 KNOWN_FAILURE_REASONS = {
-    "07-len sweep period sync.gb": "Length/sweep frame-sequencer power-up sync remains incomplete.",
-    "08-len ctr during power.gb": "Length counter behavior while APU power is off is still incomplete.",
     "09-wave read while on.gb": "CH3 wave RAM reads while the channel is active are still incomplete.",
     "10-wave trigger while on.gb": "CH3 retrigger behavior while active is still incomplete.",
-    "11-regs after power.gb": "APU power-off register retention is still incomplete.",
     "12-wave write while on.gb": "CH3 wave RAM writes while the channel is active are still incomplete.",
 }
 
