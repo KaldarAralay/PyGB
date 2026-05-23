@@ -10,7 +10,7 @@ GBemu is now a playable DMG emulator for the current primary real-ROM target, Po
 
 The project is not cycle-perfect and not yet a broad commercial compatibility emulator. The strongest next work is to keep adding evidence while improving accuracy and tail-latency behavior.
 
-Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, and functional audio are in place. The largest remaining gaps are full pixel FIFO completeness, APU ROM-suite/analog accuracy, broader commercial compatibility, real link/SGB/peripheral behavior, and CGB mode.
+Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, and functional audio are in place. The largest remaining gaps are full pixel FIFO completeness, full APU ROM-suite/analog accuracy, broader commercial compatibility, real link/SGB/peripheral behavior, and CGB mode.
 
 ## Completed Milestones
 
@@ -97,11 +97,12 @@ Done:
 - Live audio capture via `--capture-live-audio`.
 - Pokemon Red 600-frame headless/live WAV identity verified byte-for-byte.
 - Default live audio queue tuned for gameplay stability rather than minimum latency.
+- Blargg `dmg_sound` APU ROM-suite lane through `scripts\verify_apu.py`; current baseline passes 4 ROMs and tracks 8 known `XFAIL` cases.
 
 Remaining:
 
 - Hardware-accurate analog filtering.
-- APU ROM-suite compatibility.
+- Full Blargg `dmg_sound` compatibility and stricter APU-suite expansion.
 - More edge-case coverage for obscure sweep/envelope/trigger interactions.
 - Latency tuning options after stability remains proven.
 
@@ -112,6 +113,7 @@ Run these before treating a compatibility or timing change as safe:
 ```powershell
 .\.tools\python-3.12.4-embed-amd64\python.exe -B -m unittest discover -v
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_ppu.py --strict --max-steps 3000000
+.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_apu.py --json-output qa-output\apu-dmg-sound.json
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_pokemon_red.py
 python -B scripts\verify_oak_encyclopedia_oracle.py
 python -B scripts\verify_pokemon_red_sprite_scene_oracle.py
@@ -153,9 +155,9 @@ The remaining performance-gate work is live-window capture. The parser already a
 
 The next step is to capture those live logs reproducibly enough that the parser can run without manual copy/paste.
 
-### 2. Add APU ROM-Suite Coverage
+### 2. Turn More Blargg `dmg_sound` XFails Green
 
-Audio is now audible and deterministic enough to test more seriously. The next accuracy work should add APU-specific ROM suites and compare serial pass/fail output or reference PCM where practical.
+Audio is now audible, deterministic, and covered by a repeatable APU ROM-suite lane. The next accuracy work should attack the known `XFAIL` cases one family at a time.
 
 Suggested focus:
 

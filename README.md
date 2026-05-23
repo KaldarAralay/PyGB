@@ -12,7 +12,7 @@ Current verified status: May 23, 2026.
 - Cycle-aware bus timing for DIV/TIMA edge ticking, delayed TIMA reloads, serial transfer timing, OAM DMA, PPU access restrictions, hardware-style I/O read masks, and inert CGB-only registers on DMG.
 - PPU timing and rendering for DMG background/window/sprite output, LCD modes, `LY`/`STAT`, line-153 behavior, DMG STAT write quirk, mode-3 penalties, selected mid-scanline register effects, OAM DMA sprite hiding, frame dumps, and the strict selected external PPU gate.
 - Joypad input through `FF00`, CLI held buttons, STOP wake through selected joypad lines, and Tkinter keyboard controls.
-- APU register/channel model with pulse, wave, noise, length, envelope, sweep, DAC gating, mixer, initial high-pass filtering, sample buffering, WAV dumps, and live Windows audio playback.
+- APU register/channel model with pulse, wave, noise, length, envelope, sweep, DAC gating, mixer, initial high-pass filtering, sample buffering, WAV dumps, live Windows audio playback, deterministic WAV identity checks, and Blargg `dmg_sound` regression coverage.
 - Tkinter window mode with frame pacing, live audio, pause/reset/trace toggles, save-RAM lifecycle, and rolling frame/audio spike profiling.
 - Pokemon Red performance hot paths for heavy MBC3/LCD-off copy/fill/decompression frames, with exact-vs-fast unit coverage for shadow-OAM/object helpers, PyBoy visual/OAM oracles for current sprite regressions, and an automated headless performance gate.
 
@@ -144,7 +144,7 @@ Run the full unit suite:
 Latest full suite result:
 
 ```text
-Ran 331 tests in 0.528s
+Ran 336 tests in 0.524s
 OK
 ```
 
@@ -165,6 +165,14 @@ Run the Pokemon Red real-ROM regression gate:
 ```powershell
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_pokemon_red.py
 ```
+
+Run the Blargg `dmg_sound` APU ROM-suite lane:
+
+```powershell
+.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_apu.py --json-output qa-output\apu-dmg-sound.json
+```
+
+The default APU lane runs all 12 single `dmg_sound` ROMs. Current baseline: `01-registers`, `02-len ctr`, `03-trigger`, and `06-overflow on trigger` pass; the remaining sweep, length, power, and CH3 wave-RAM edge cases are tracked as `XFAIL`. Use `--expected-pass-only` for the strict passing subset, or `--strict` when working toward a full-suite pass.
 
 Run the Pokemon Red PyBoy visual/OAM oracles:
 
@@ -189,7 +197,8 @@ Latest sprite-scene oracle and performance-gate evidence:
 
 - Oak's Lab encyclopedia crop: `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F`.
 - Sprite-heavy saved-game scene: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes.
-- Performance gate: text `run_fps=97.14`; sprites `run_fps=79.95`; sprites with headless audio output `run_fps=67.11`, `apu_dropped_samples=0`.
+- Blargg `dmg_sound`: 4 passing ROMs, 8 tracked `XFAIL` ROMs, no unexpected failures in the default lane.
+- Performance gate: text `run_fps=97.10`; sprites `run_fps=79.57`; sprites with headless audio output `run_fps=66.97`, `apu_dropped_samples=0`.
 
 Verify headless/live WAV identity for a fixed Pokemon Red run:
 
@@ -209,7 +218,7 @@ SHA-256: 6575f192cdea8ed0bf84c1ee775add94035c7e556a36c2a094a1dbb2f052b10b
 
 - This is still DMG-only; CGB mode is not implemented.
 - PPU coverage is strong for the selected strict gate, but the emulator still does not model a complete per-dot pixel FIFO or every possible mid-scanline raster edge case.
-- APU/audio is functional and verified for deterministic PCM identity, but mature analog filtering and broad APU ROM-suite compatibility are still pending.
+- APU/audio is functional, deterministic for current PCM identity checks, and covered by a Blargg `dmg_sound` lane, but mature analog filtering and full APU ROM-suite compatibility are still pending.
 - Commercial compatibility is early. Pokemon Red is the primary tested gameplay target; Dr. Mario is a visual smoke target. Other games should be treated as exploratory until they are added to the compatibility matrix.
 - Performance includes several real-ROM-specific hot paths. They preserve current instruction/cycle/audio identity for the covered Pokemon Red windows, but broader optimization should continue to be measured with verification gates on.
 
