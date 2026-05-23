@@ -6,11 +6,11 @@ This document is the active roadmap. Historical Stage 1 CPU evidence is preserve
 
 ## Current State
 
-GBemu is now a playable DMG emulator for the current primary real-ROM target, Pokemon Red, with Super Mario Land added as a quick early-action performance smoke target. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, and rolling frame/audio profiling.
+GBemu is now a playable DMG-first emulator for the current primary real-ROM target, Pokemon Red, with Super Mario Land added as a quick early-action performance smoke target. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, rolling frame/audio profiling, and a minimal CGB foundation.
 
 The project is not cycle-perfect and not yet a broad commercial compatibility emulator. The strongest next work is to keep adding evidence while improving accuracy and tail-latency behavior.
 
-Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, and functional audio are in place. The largest remaining gaps are full pixel FIFO completeness, stricter APU suite/analog accuracy, broader commercial compatibility, real link/SGB/peripheral behavior, and CGB mode.
+Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, functional audio, and CGB foundation registers/banking are in place. The largest remaining gaps are full pixel FIFO completeness, stricter APU suite/analog accuracy, broader commercial compatibility, full CGB rendering/timing/DMA behavior, and real link/SGB/peripheral behavior.
 
 ## Completed Milestones
 
@@ -107,6 +107,27 @@ Remaining:
 - More edge-case coverage for obscure sweep/envelope/trigger interactions.
 - Latency tuning options after stability remains proven.
 
+### Stage 6: CGB Foundation
+
+Status: foundation started; not a compatibility mode yet.
+
+Done:
+
+- CGB-enhanced and CGB-only header detection.
+- Explicit emulator mode selection with default DMG behavior preserved and `--mode dmg|cgb|auto` available in the CLI.
+- DMG-mode CGB-only IO remains inert.
+- CGB-mode foundations for `FF4F` VRAM bank select, `FF70` WRAM bank select, `FF68`-`FF6B` palette RAM/indexing, and KEY1 double-speed placeholder state.
+- Unit coverage for default DMG behavior and exposed CGB behavior.
+- `scripts\verify_cgb_foundation.py` synthetic smoke verifier.
+
+Remaining:
+
+- CGB palette application in the renderer.
+- CGB VRAM bank attributes/tile maps and CGB priority rules.
+- HDMA/GDMA.
+- Double-speed timing model.
+- CGB boot behavior and real CGB ROM compatibility gates.
+
 ## Active Regression Gates
 
 Run these before treating a compatibility or timing change as safe:
@@ -115,6 +136,7 @@ Run these before treating a compatibility or timing change as safe:
 .\.tools\python-3.12.4-embed-amd64\python.exe -B -m unittest discover -v
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_ppu.py --strict --max-steps 3000000
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_apu.py --json-output qa-output\apu-dmg-sound.json
+.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_cgb_foundation.py --json-output qa-output\cgb-foundation.json
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_pokemon_red.py
 python -B scripts\verify_oak_encyclopedia_oracle.py
 python -B scripts\verify_pokemon_red_sprite_scene_oracle.py
@@ -197,6 +219,6 @@ The current Pokemon Red speedups are guarded by exact ROM byte patterns, LCD sta
 - Fall back to normal interpretation for uncommon branches.
 - Verify against tests, strict PPU, fixed headless slices, live profile, and WAV identity when audio output is active.
 
-### 6. Defer CGB Until DMG Gates Are Broader
+### 6. Grow CGB From The Foundation
 
-CGB is a large cross-cutting feature, not a small rendering option. It touches CGB boot behavior, VRAM and WRAM banking, CGB palettes, HDMA, double-speed timing, OAM priority differences, and many IO registers. Start it after DMG audio/PPU/performance gates are stable enough to catch regressions quickly.
+CGB is a large cross-cutting feature, not a small rendering option. Keep the current foundation narrow and verified, then add one subsystem at a time: renderer palette application, tile-map attributes/VRAM bank usage, HDMA, double-speed timing, priority differences, and CGB boot behavior.

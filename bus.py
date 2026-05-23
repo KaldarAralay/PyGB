@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 
 from apu import APU
 from cartridge import Cartridge
@@ -56,6 +57,22 @@ DMG_POST_BOOT_REGISTERED_MARK_TILE = bytes(
 )
 
 
+class EmulationMode(Enum):
+    DMG = "DMG"
+    CGB = "CGB"
+
+    @classmethod
+    def coerce(cls, value: "EmulationMode | str") -> "EmulationMode":
+        if isinstance(value, cls):
+            return value
+        normalized = value.strip().upper()
+        if normalized in {"DMG", "GB"}:
+            return cls.DMG
+        if normalized in {"CGB", "GBC"}:
+            return cls.CGB
+        raise ValueError(f"unknown emulation mode: {value!r}")
+
+
 @dataclass(frozen=True)
 class BusProfileStats:
     slow_system_counter_cycles: int
@@ -70,16 +87,22 @@ class Bus:
         cartridge: Cartridge,
         serial_sink: Callable[[str], None] | None = None,
         boot_rom: bytes | None = None,
+        mode: EmulationMode | str = EmulationMode.DMG,
     ) -> None:
         self.cartridge = cartridge
+        self.mode = EmulationMode.coerce(mode)
         self.mapper = cartridge.mapper
         self.boot_rom = bytes(boot_rom[:0x100]) if boot_rom is not None else b""
         self.boot_rom_enabled = bool(self.boot_rom)
-        self.vram = bytearray(0x2000)
-        self.wram = bytearray(0x2000)
+        self.vram = bytearray(0x4000 if self.cgb_mode else 0x2000)
+        self.wram = bytearray(0x8000 if self.cgb_mode else 0x2000)
         self.oam = bytearray(0xA0)
         self.io = bytearray(0x80)
         self.hram = bytearray(0x7F)
+        self.bg_palette_ram = bytearray(0x40)
+        self.obj_palette_ram = bytearray(0x40)
+        self._vram_bank = 0
+        self._wram_bank_register = 0
         self.ie = 0
         self.serial_text = ""
         self.serial_sink = serial_sink or self._stdout_serial_sink
@@ -105,6 +128,32 @@ class Bus:
         self.apu = APU(self)
         self.joypad = Joypad(self)
         self.ppu = PPU(self)
+
+    @property
+    def cgb_mode(self) -> bool:
+        return self.mode == EmulationMode.CGB
+
+    @property
+    def vram_bank(self) -> int:
+        return self._vram_bank if self.cgb_mode else 0
+
+    @property
+    def wram_bank_register(self) -> int:
+        return self._wram_bank_register if self.cgb_mode else 0
+
+    @property
+    def wram_bank(self) -> int:
+        if not self.cgb_mode:
+            return 1
+        return self._wram_bank_register or 1
+
+    @property
+    def double_speed(self) -> bool:
+        return bool(self.io[0x4D] & 0x80)
+
+    @property
+    def speed_switch_armed(self) -> bool:
+        return bool(self.io[0x4D] & 0x01)
 
     def consume_profile(self) -> BusProfileStats:
         stats = BusProfileStats(
@@ -138,13 +187,13 @@ class Bus:
         if address <= 0x9FFF:
             if not self._vram_read_accessible():
                 return 0xFF
-            return self.vram[address - 0x8000]
+            return self.vram[self._vram_offset(address)]
         if address <= 0xBFFF:
             return self.mapper.read_ram(address)
         if address <= 0xDFFF:
-            return self.wram[address - 0xC000]
+            return self.wram[self._wram_offset(address)]
         if address <= 0xFDFF:
-            return self.wram[address - 0xE000]
+            return self.wram[self._wram_offset(address - 0x2000)]
         if address <= 0xFE9F:
             if not self._oam_read_accessible():
                 return 0xFF
@@ -153,8 +202,12 @@ class Bus:
             return 0xFF
         if address <= 0xFF7F:
             offset = address - 0xFF00
-            if offset in UNUSABLE_IO_OFFSETS or offset in CGB_ONLY_IO_OFFSETS:
+            if offset in UNUSABLE_IO_OFFSETS:
                 return 0xFF
+            if offset in CGB_ONLY_IO_OFFSETS and not self.cgb_mode:
+                return 0xFF
+            if offset in CGB_ONLY_IO_OFFSETS:
+                return self._read_cgb_io(offset)
             if address == 0xFF00:
                 return self.joypad.read()
             if address == 0xFF02:
@@ -185,16 +238,16 @@ class Bus:
         if address <= 0x9FFF:
             if not self._vram_write_accessible():
                 return
-            self.vram[address - 0x8000] = value
+            self.vram[self._vram_offset(address)] = value
             return
         if address <= 0xBFFF:
             self.mapper.write_ram(address, value)
             return
         if address <= 0xDFFF:
-            self.wram[address - 0xC000] = value
+            self.wram[self._wram_offset(address)] = value
             return
         if address <= 0xFDFF:
-            self.wram[address - 0xE000] = value
+            self.wram[self._wram_offset(address - 0x2000)] = value
             return
         if address <= 0xFE9F:
             if not self._oam_write_accessible():
@@ -205,7 +258,11 @@ class Bus:
             return
         if address <= 0xFF7F:
             offset = address - 0xFF00
-            if offset in UNUSABLE_IO_OFFSETS or offset in CGB_ONLY_IO_OFFSETS:
+            if offset in UNUSABLE_IO_OFFSETS:
+                return
+            if offset in CGB_ONLY_IO_OFFSETS and not self.cgb_mode:
+                return
+            if offset in CGB_ONLY_IO_OFFSETS and self._write_cgb_io(offset, value):
                 return
             if address == 0xFF00:
                 self.joypad.write_select(value)
@@ -511,6 +568,63 @@ class Bus:
     @staticmethod
     def _is_hram(address: int) -> bool:
         return 0xFF80 <= address <= 0xFFFE
+
+    def _vram_offset(self, address: int) -> int:
+        bank = self.vram_bank
+        return bank * 0x2000 + ((address - 0x8000) & 0x1FFF)
+
+    def _wram_offset(self, address: int) -> int:
+        if address < 0xD000:
+            return (address - 0xC000) & 0x0FFF
+        bank = self.wram_bank if self.cgb_mode else 1
+        return bank * 0x1000 + ((address - 0xD000) & 0x0FFF)
+
+    def _read_cgb_io(self, offset: int) -> int:
+        if offset == 0x4F:
+            return 0xFE | self._vram_bank
+        if offset == 0x68:
+            return self.io[0x68] & 0xBF
+        if offset == 0x69:
+            return self.bg_palette_ram[self.io[0x68] & 0x3F]
+        if offset == 0x6A:
+            return self.io[0x6A] & 0xBF
+        if offset == 0x6B:
+            return self.obj_palette_ram[self.io[0x6A] & 0x3F]
+        if offset == 0x70:
+            return 0xF8 | self._wram_bank_register
+        return 0xFF
+
+    def _write_cgb_io(self, offset: int, value: int) -> bool:
+        if offset == 0x4F:
+            self._vram_bank = value & 0x01
+            return True
+        if offset == 0x68:
+            self.io[0x68] = value & 0xBF
+            return True
+        if offset == 0x69:
+            self._write_cgb_palette_data(0x68, self.bg_palette_ram, value)
+            return True
+        if offset == 0x6A:
+            self.io[0x6A] = value & 0xBF
+            return True
+        if offset == 0x6B:
+            self._write_cgb_palette_data(0x6A, self.obj_palette_ram, value)
+            return True
+        if offset == 0x70:
+            self._wram_bank_register = value & 0x07
+            return True
+        return True
+
+    def _write_cgb_palette_data(
+        self,
+        index_offset: int,
+        palette_ram: bytearray,
+        value: int,
+    ) -> None:
+        index = self.io[index_offset] & 0x3F
+        palette_ram[index] = value
+        if self.io[index_offset] & 0x80:
+            self.io[index_offset] = (self.io[index_offset] & 0x80) | ((index + 1) & 0x3F)
 
     def _vram_read_accessible(self) -> bool:
         if not self.ppu.lcd_enabled:

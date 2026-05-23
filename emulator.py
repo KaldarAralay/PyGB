@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from audio import AudioSample
-from bus import Bus
+from bus import Bus, EmulationMode
 from cartridge import Cartridge
 from cpu import CPU
 from joypad import Joypad
@@ -19,13 +19,15 @@ class Emulator:
         start_pc: int = 0x0100,
         post_boot: bool = True,
         boot_rom: bytes | None = None,
+        mode: EmulationMode | str = EmulationMode.DMG,
     ) -> None:
         self.cartridge = cartridge
+        self.mode = self._resolve_mode(mode, cartridge)
         self._serial_sink = serial_sink
         self._start_pc = start_pc
         self._post_boot = post_boot
         self._boot_rom = bytes(boot_rom) if boot_rom is not None else None
-        self.bus = Bus(cartridge, serial_sink=serial_sink, boot_rom=boot_rom)
+        self.bus = Bus(cartridge, serial_sink=serial_sink, boot_rom=boot_rom, mode=self.mode)
         self.cpu = CPU(self.bus, start_pc=start_pc, post_boot=post_boot)
 
     @classmethod
@@ -37,6 +39,7 @@ class Emulator:
         start_pc: int = 0x0100,
         post_boot: bool = True,
         boot_rom: bytes | None = None,
+        mode: EmulationMode | str = EmulationMode.DMG,
     ) -> "Emulator":
         return cls(
             Cartridge.from_file(path),
@@ -44,7 +47,14 @@ class Emulator:
             start_pc=start_pc,
             post_boot=post_boot,
             boot_rom=boot_rom,
+            mode=mode,
         )
+
+    @staticmethod
+    def _resolve_mode(mode: EmulationMode | str, cartridge: Cartridge) -> EmulationMode:
+        if isinstance(mode, str) and mode.strip().lower() == "auto":
+            return EmulationMode.CGB if cartridge.header.cgb_supported else EmulationMode.DMG
+        return EmulationMode.coerce(mode)
 
     def set_buttons(self, buttons: str | set[str]) -> None:
         if isinstance(buttons, str):
@@ -129,7 +139,12 @@ class Emulator:
 
     def reset(self, *, preserve_ram: bool = True) -> None:
         self.cartridge = self.cartridge.clone_for_reset(preserve_ram=preserve_ram)
-        self.bus = Bus(self.cartridge, serial_sink=self._serial_sink, boot_rom=self._boot_rom)
+        self.bus = Bus(
+            self.cartridge,
+            serial_sink=self._serial_sink,
+            boot_rom=self._boot_rom,
+            mode=self.mode,
+        )
         self.cpu = CPU(self.bus, start_pc=self._start_pc, post_boot=self._post_boot)
 
     def drain_audio_samples(self) -> list[AudioSample]:

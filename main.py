@@ -6,6 +6,7 @@ from pathlib import Path
 from apu import DEFAULT_SAMPLE_RATE
 from audio import WavAudioWriter
 from button_script import ButtonScript, load_button_script, parse_button_script
+from bus import EmulationMode
 from debug import TraceLogger
 from display import DisplayConfig, run_tk_display
 from emulator import Emulator
@@ -98,6 +99,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-pc", type=lambda value: int(value, 0))
     parser.add_argument("--cold-boot-registers", action="store_true", help="Start registers at zero")
+    parser.add_argument(
+        "--mode",
+        choices=("dmg", "cgb", "auto"),
+        default="dmg",
+        help="Hardware mode. Defaults to DMG; use cgb or auto for the CGB foundation path.",
+    )
     return parser.parse_args()
 
 
@@ -190,6 +197,7 @@ def main() -> int:
         start_pc=start_pc,
         post_boot=(not args.cold_boot_registers) and boot_rom is None,
         boot_rom=boot_rom,
+        mode=args.mode,
     )
     if args.audio_sample_rate <= 0:
         raise SystemExit("--audio-sample-rate must be positive")
@@ -211,6 +219,9 @@ def main() -> int:
         emulator.load_save_file(args.save_file)
 
     print(emulator.cartridge.header.summary())
+    print(f"Mode: {emulator.mode.value}")
+    if emulator.cartridge.header.cgb_only and emulator.mode != EmulationMode.CGB:
+        print("Warning: cartridge is CGB-only but emulator mode is DMG.")
     print(emulator.cartridge.mapper_status)
     if not emulator.cartridge.is_supported_mapper:
         print("Warning: cartridge mapper is not implemented; execution may not be meaningful.")

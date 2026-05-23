@@ -6,15 +6,17 @@ from bus import (
     Bus,
     DMG_POST_BOOT_REGISTERED_MARK_TILE,
     DMG_POST_BOOT_REGISTERED_MARK_TILE_ADDRESS,
+    EmulationMode,
     SERIAL_INTERNAL_TRANSFER_CYCLES,
 )
 from cartridge import Cartridge, NINTENDO_LOGO, compute_header_checksum
 
 
-def make_rom(program: bytes = b"", title: bytes = b"TEST") -> bytes:
+def make_rom(program: bytes = b"", title: bytes = b"TEST", cgb_flag: int = 0x00) -> bytes:
     rom = bytearray([0x00] * 0x8000)
     rom[0x0100 : 0x0100 + len(program)] = program
     rom[0x0134 : 0x0134 + len(title)] = title
+    rom[0x0143] = cgb_flag
     rom[0x0147] = 0x00
     rom[0x0148] = 0x00
     rom[0x0149] = 0x00
@@ -101,6 +103,25 @@ class CartridgeBusTests(unittest.TestCase):
         self.assertEqual(cartridge.header.title, "CPU TEST")
         self.assertEqual(cartridge.header.cartridge_type, "ROM ONLY")
         self.assertTrue(cartridge.header.header_checksum_ok)
+        self.assertFalse(cartridge.header.cgb_supported)
+        self.assertFalse(cartridge.header.cgb_only)
+        self.assertEqual(cartridge.header.cgb_status, "DMG")
+
+    def test_cgb_header_flag_is_parsed_without_polluting_title(self) -> None:
+        enhanced = Cartridge(make_rom(title=b"CGBTEST", cgb_flag=0x80))
+        cgb_only = Cartridge(make_rom(title=b"CGBONLY", cgb_flag=0xC0))
+
+        self.assertEqual(enhanced.header.title, "CGBTEST")
+        self.assertEqual(enhanced.header.cgb_flag, 0x80)
+        self.assertTrue(enhanced.header.cgb_supported)
+        self.assertFalse(enhanced.header.cgb_only)
+        self.assertEqual(enhanced.header.cgb_status, "CGB enhanced")
+
+        self.assertEqual(cgb_only.header.title, "CGBONLY")
+        self.assertEqual(cgb_only.header.cgb_flag, 0xC0)
+        self.assertTrue(cgb_only.header.cgb_supported)
+        self.assertTrue(cgb_only.header.cgb_only)
+        self.assertEqual(cgb_only.header.cgb_status, "CGB only")
 
     def test_cartridge_type_profile_is_header_driven(self) -> None:
         cases = [
@@ -314,6 +335,93 @@ class CartridgeBusTests(unittest.TestCase):
                 bus.write8(address, 0x00)
                 self.assertEqual(bus.read8(address), 0xFF)
                 self.assertEqual(bus.io[address - 0xFF00], 0x00)
+
+    def test_cgb_mode_exposes_vram_bank_register(self) -> None:
+        bus = Bus(
+            Cartridge(make_rom(cgb_flag=0x80)),
+            serial_sink=lambda _: None,
+            mode=EmulationMode.CGB,
+        )
+        bus.write8(0xFF40, bus.read8(0xFF40) & ~0x80)
+
+        bus.write8(0x8000, 0x12)
+        bus.write8(0xFF4F, 0x01)
+        bus.write8(0x8000, 0x34)
+
+        self.assertTrue(bus.cgb_mode)
+        self.assertEqual(bus.vram_bank, 1)
+        self.assertEqual(bus.read8(0xFF4F), 0xFF)
+        self.assertEqual(bus.read8(0x8000), 0x34)
+        bus.write8(0xFF4F, 0x00)
+        self.assertEqual(bus.vram_bank, 0)
+        self.assertEqual(bus.read8(0xFF4F), 0xFE)
+        self.assertEqual(bus.read8(0x8000), 0x12)
+
+    def test_cgb_mode_exposes_wram_bank_register(self) -> None:
+        bus = Bus(
+            Cartridge(make_rom(cgb_flag=0x80)),
+            serial_sink=lambda _: None,
+            mode=EmulationMode.CGB,
+        )
+
+        bus.write8(0xC000, 0x11)
+        bus.write8(0xD000, 0x22)
+        bus.write8(0xFF70, 0x02)
+        bus.write8(0xD000, 0x33)
+
+        self.assertEqual(bus.read8(0xC000), 0x11)
+        self.assertEqual(bus.read8(0xE000), 0x11)
+        self.assertEqual(bus.wram_bank_register, 2)
+        self.assertEqual(bus.wram_bank, 2)
+        self.assertEqual(bus.read8(0xFF70), 0xFA)
+        self.assertEqual(bus.read8(0xD000), 0x33)
+        self.assertEqual(bus.read8(0xF000), 0x33)
+
+        bus.write8(0xFF70, 0x00)
+        self.assertEqual(bus.wram_bank_register, 0)
+        self.assertEqual(bus.wram_bank, 1)
+        self.assertEqual(bus.read8(0xFF70), 0xF8)
+        self.assertEqual(bus.read8(0xD000), 0x22)
+        self.assertEqual(bus.read8(0xF000), 0x22)
+
+    def test_cgb_mode_exposes_palette_registers(self) -> None:
+        bus = Bus(
+            Cartridge(make_rom(cgb_flag=0x80)),
+            serial_sink=lambda _: None,
+            mode=EmulationMode.CGB,
+        )
+
+        bus.write8(0xFF68, 0x80)
+        bus.write8(0xFF69, 0x12)
+        self.assertEqual(bus.read8(0xFF68), 0x81)
+        bus.write8(0xFF68, 0x00)
+        self.assertEqual(bus.read8(0xFF69), 0x12)
+
+        bus.write8(0xFF6A, 0x82)
+        bus.write8(0xFF6B, 0xAB)
+        self.assertEqual(bus.read8(0xFF6A), 0x83)
+        bus.write8(0xFF6A, 0x02)
+        self.assertEqual(bus.read8(0xFF6B), 0xAB)
+
+        bus.write8(0xFF68, 0xFF)
+        self.assertEqual(bus.read8(0xFF68), 0xBF)
+
+    def test_key1_exposes_double_speed_placeholder_state(self) -> None:
+        bus = Bus(
+            Cartridge(make_rom(cgb_flag=0x80)),
+            serial_sink=lambda _: None,
+            mode=EmulationMode.CGB,
+        )
+
+        self.assertFalse(bus.double_speed)
+        self.assertFalse(bus.speed_switch_armed)
+        bus.write8(0xFF4D, 0x01)
+        self.assertTrue(bus.speed_switch_armed)
+
+        self.assertTrue(bus.perform_speed_switch())
+        self.assertTrue(bus.double_speed)
+        self.assertFalse(bus.speed_switch_armed)
+        self.assertEqual(bus.read8(0xFF4D) & 0x81, 0x80)
 
     def test_serial_transfer_hook(self) -> None:
         out: list[str] = []

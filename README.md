@@ -1,6 +1,6 @@
 # GBemu
 
-GBemu is a DMG-only Game Boy emulator written in Python. It now runs real commercial ROMs well enough for interactive testing: Pokemon Red is the primary gameplay regression target, Super Mario Land is an early-action performance smoke target, Dr. Mario is a visual smoke target, and the CPU/PPU/APU subsystems have automated regression gates.
+GBemu is a DMG-first Game Boy emulator written in Python. It now runs real commercial DMG ROMs well enough for interactive testing: Pokemon Red is the primary gameplay regression target, Super Mario Land is an early-action performance smoke target, Dr. Mario is a visual smoke target, and the CPU/PPU/APU subsystems have automated regression gates. A minimal CGB foundation exists for headers, explicit mode selection, banking, and palette registers, but CGB game compatibility is not claimed yet.
 
 Current verified status: May 23, 2026.
 
@@ -8,6 +8,7 @@ Current verified status: May 23, 2026.
 
 - `.gb` ROM loading with cartridge header reporting, optional user-supplied DMG boot ROM mapping, and one-way `FF50` boot ROM unmapping.
 - Header-driven cartridge mapper dispatch for ROM-only, ROM+RAM, MBC1, MBC1M, MBC2, MBC3 with RTC sidecar state, MBC5 including rumble-control behavior, and HuC1 basic banking/IR state. Unsupported cartridge profiles are recognized and warned about.
+- CGB header detection for CGB-enhanced and CGB-only ROMs, explicit `--mode dmg|cgb|auto`, and a guarded CGB foundation for `FF4F` VRAM banking, `FF70` WRAM banking, `FF68`-`FF6B` palette RAM, and KEY1 double-speed placeholder state.
 - SM83/LR35902 CPU core covering documented non-CB and CB-prefixed opcodes, stack/control flow, interrupts, HALT bug behavior, STOP wake/freeze behavior, and Blargg `cpu_instrs` verification.
 - Cycle-aware bus timing for DIV/TIMA edge ticking, delayed TIMA reloads, serial transfer timing, OAM DMA, PPU access restrictions, hardware-style I/O read masks, and inert CGB-only registers on DMG.
 - PPU timing and rendering for DMG background/window/sprite output, LCD modes, `LY`/`STAT`, line-153 behavior, DMG STAT write quirk, mode-3 penalties, selected mid-scanline register effects, OAM DMA sprite hiding, frame dumps, and the strict selected external PPU gate.
@@ -53,6 +54,12 @@ Run Super Mario Land, the current quick action/performance smoke target:
 
 ```powershell
 python main.py .\roms\SML.gb --window --audio --max-instructions 0
+```
+
+Run a CGB-capable ROM through the foundation path:
+
+```powershell
+python main.py path\to\rom.gbc --mode cgb --max-instructions 0 --frames 1
 ```
 
 The embedded verification runtime does not include Tkinter. Use system `python` for `--window`; use `.\.tools\python-3.12.4-embed-amd64\python.exe` for headless tests and verifiers.
@@ -151,7 +158,7 @@ Run the full unit suite:
 Latest full suite result:
 
 ```text
-Ran 351 tests in 0.519s
+Ran 358 tests in 0.533s
 OK
 ```
 
@@ -180,6 +187,14 @@ Run the Blargg `dmg_sound` APU ROM-suite lane:
 ```
 
 The default APU lane runs all 12 single `dmg_sound` ROMs. Current baseline: all ROMs `01` through `12` pass, including the CH3 wave-RAM read/retrigger/write cases.
+
+Run the synthetic CGB foundation smoke verifier:
+
+```powershell
+.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_cgb_foundation.py --json-output qa-output\cgb-foundation.json
+```
+
+This verifies the new CGB mode/register foundation only. It is not a CGB game compatibility claim.
 
 Run the Pokemon Red PyBoy visual/OAM oracles:
 
@@ -217,8 +232,9 @@ Latest sprite-scene oracle and performance-gate evidence:
 - Oak's Lab encyclopedia crop: `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F`.
 - Sprite-heavy saved-game scene: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes.
 - Blargg `dmg_sound`: all 12 single ROMs pass in the default lane, including the CH3 wave-RAM edge cases.
-- Performance gate: text `run_fps=92.59`; sprites `run_fps=74.38`; sprites with headless audio output `run_fps=64.88`, `apu_dropped_samples=0`.
-- Super Mario Land action gate: headless action `run_fps=80.89`; action with headless audio output `run_fps=67.41`, `apu_dropped_samples=0`. Latest live action capture checked 10 non-startup profile windows with min `wall_fps=46.84`, min queue `33.5 ms`, and zero audio underruns/drops.
+- Performance gate: text `run_fps=90.93`; sprites `run_fps=74.36`; sprites with headless audio output `run_fps=64.82`, `apu_dropped_samples=0`.
+- Super Mario Land action gate: headless action `run_fps=79.21`; action with headless audio output `run_fps=67.50`, `apu_dropped_samples=0`. Latest live action capture checked 10 non-startup profile windows with min `wall_fps=46.84`, min queue `33.5 ms`, and zero audio underruns/drops.
+- CGB foundation smoke: synthetic header/mode/register checks pass for CGB detection, DMG inert behavior, VRAM/WRAM bank selects, CGB palettes, and KEY1 placeholder state.
 
 Verify headless/live WAV identity for a fixed Pokemon Red run:
 
@@ -236,7 +252,7 @@ SHA-256: 6575f192cdea8ed0bf84c1ee775add94035c7e556a36c2a094a1dbb2f052b10b
 
 ## Current Limitations
 
-- This is still DMG-only; CGB mode is not implemented.
+- CGB foundation is started, but CGB rendering, HDMA, double-speed timing, CGB priority rules, CGB boot flow, and CGB game compatibility are not implemented yet.
 - PPU coverage is strong for the selected strict gate, but the emulator still does not model a complete per-dot pixel FIFO or every possible mid-scanline raster edge case.
 - APU/audio is functional, deterministic for current PCM identity checks, and covered by a fully passing Blargg `dmg_sound` single-ROM lane, but mature analog filtering and stricter APU-suite compatibility are still pending.
 - Commercial compatibility is early. Pokemon Red is the primary tested gameplay target; Super Mario Land is an action/performance smoke target; Dr. Mario is a visual smoke target. Other games should be treated as exploratory until they are added to the compatibility matrix.

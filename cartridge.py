@@ -137,6 +137,7 @@ CARTRIDGE_TYPE_SPECS = {
 @dataclass(frozen=True)
 class CartridgeHeader:
     title: str
+    cgb_flag: int
     cartridge_type_code: int
     rom_size_code: int
     ram_size_code: int
@@ -160,6 +161,22 @@ class CartridgeHeader:
     @property
     def header_checksum_ok(self) -> bool:
         return self.header_checksum == self.computed_header_checksum
+
+    @property
+    def cgb_supported(self) -> bool:
+        return self.cgb_flag in {0x80, 0xC0}
+
+    @property
+    def cgb_only(self) -> bool:
+        return self.cgb_flag == 0xC0
+
+    @property
+    def cgb_status(self) -> str:
+        if self.cgb_only:
+            return "CGB only"
+        if self.cgb_supported:
+            return "CGB enhanced"
+        return "DMG"
 
     def summary(self) -> str:
         status = "OK" if self.header_checksum_ok else "BAD"
@@ -762,10 +779,13 @@ class Cartridge:
         self._latch_rtc(update=False)
 
     def _parse_header(self) -> CartridgeHeader:
-        title_bytes = self.data[0x0134:0x0144]
+        cgb_flag = self.data[0x0143]
+        title_end = 0x0143 if cgb_flag in {0x80, 0xC0} else 0x0144
+        title_bytes = self.data[0x0134:title_end]
         title = title_bytes.split(b"\x00", 1)[0].decode("ascii", errors="replace").strip()
         return CartridgeHeader(
             title=title,
+            cgb_flag=cgb_flag,
             cartridge_type_code=self.data[0x0147],
             rom_size_code=self.data[0x0148],
             ram_size_code=self.data[0x0149],

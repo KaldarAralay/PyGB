@@ -3,14 +3,16 @@ from __future__ import annotations
 import unittest
 
 from apu import CPU_CLOCK_HZ
+from bus import EmulationMode
 from cartridge import Cartridge, compute_header_checksum
 from emulator import Emulator
 
 
-def make_rom(program: bytes = b"\x00") -> bytes:
+def make_rom(program: bytes = b"\x00", cgb_flag: int = 0x00) -> bytes:
     rom = bytearray([0x00] * 0x8000)
     rom[0x0100 : 0x0100 + len(program)] = program
     rom[0x0134 : 0x0134 + len(b"MAINTEST")] = b"MAINTEST"
+    rom[0x0143] = cgb_flag
     rom[0x0147] = 0x00
     rom[0x0148] = 0x00
     rom[0x0149] = 0x00
@@ -31,6 +33,36 @@ def make_mbc1_ram_rom() -> bytes:
 
 
 class MainLoopTests(unittest.TestCase):
+    def test_emulator_defaults_to_dmg_mode_even_for_cgb_capable_rom(self) -> None:
+        emulator = Emulator(
+            Cartridge(make_rom(cgb_flag=0x80)),
+            serial_sink=lambda _: None,
+        )
+
+        self.assertEqual(emulator.mode, EmulationMode.DMG)
+        self.assertFalse(emulator.bus.cgb_mode)
+
+    def test_emulator_can_select_cgb_mode_explicitly_or_from_auto(self) -> None:
+        cgb_cartridge = Cartridge(make_rom(cgb_flag=0x80))
+        dmg_cartridge = Cartridge(make_rom())
+
+        explicit = Emulator(cgb_cartridge, serial_sink=lambda _: None, mode="cgb")
+        auto_cgb = Emulator(cgb_cartridge, serial_sink=lambda _: None, mode="auto")
+        auto_dmg = Emulator(dmg_cartridge, serial_sink=lambda _: None, mode="auto")
+
+        self.assertEqual(explicit.mode, EmulationMode.CGB)
+        self.assertTrue(explicit.bus.cgb_mode)
+        self.assertEqual(auto_cgb.mode, EmulationMode.CGB)
+        self.assertTrue(auto_cgb.bus.cgb_mode)
+        self.assertEqual(auto_dmg.mode, EmulationMode.DMG)
+        self.assertFalse(auto_dmg.bus.cgb_mode)
+
+        explicit.bus.write8(0xFF70, 0x02)
+        explicit.reset()
+        self.assertEqual(explicit.mode, EmulationMode.CGB)
+        self.assertTrue(explicit.bus.cgb_mode)
+        self.assertEqual(explicit.bus.read8(0xFF70), 0xF8)
+
     def test_cpu_run_can_stop_on_ppu_frame_count(self) -> None:
         emulator = Emulator(Cartridge(make_rom()), serial_sink=lambda _: None)
         target = emulator.bus.ppu.frame_count + 1
