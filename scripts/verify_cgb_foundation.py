@@ -102,6 +102,12 @@ def run_smoke() -> dict[str, Any]:
     bus.write8(0xFF6A, 0x02)
     check(bus.read8(0xFF6B) == 0xBC, failures, "OBJ palette data readback failed")
 
+    check(bus.read8(0xFF6C) == 0xFE, failures, "OPRI initial CGB priority mode was not 0")
+    bus.write8(0xFF6C, 0xFF)
+    check(bus.read8(0xFF6C) == 0xFF, failures, "OPRI DMG priority mode write failed")
+    bus.write8(0xFF6C, 0x00)
+    check(bus.cgb_object_priority_mode == 0, failures, "OPRI CGB priority mode write failed")
+
     bus.write8(0xFF4D, 0x01)
     check(bus.speed_switch_armed, failures, "KEY1 prepare bit did not arm speed switch")
     check(bus.perform_speed_switch(), failures, "KEY1 speed switch placeholder did not toggle")
@@ -122,6 +128,7 @@ def run_smoke() -> dict[str, Any]:
             "key1_initial": default_cgb_only.bus.read8(0xFF4D),
             "vram_banks": len(bus.vram) // 0x2000,
             "wram_banks": len(bus.wram) // 0x1000,
+            "opri_initial": cgb_emulator.bus.read8(0xFF6C),
             "double_speed_placeholder": bus.double_speed,
         },
         "crystal": crystal,

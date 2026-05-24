@@ -134,6 +134,10 @@ class Bus:
         return self.mode == EmulationMode.CGB
 
     @property
+    def cgb_object_priority_mode(self) -> int:
+        return (self.io[0x6C] & 0x01) if self.cgb_mode else 1
+
+    @property
     def vram_bank(self) -> int:
         return self._vram_bank if self.cgb_mode else 0
 
@@ -590,6 +594,8 @@ class Bus:
             return self.io[0x6A] & 0xBF
         if offset == 0x6B:
             return self.obj_palette_ram[self.io[0x6A] & 0x3F]
+        if offset == 0x6C:
+            return 0xFE | self.cgb_object_priority_mode
         if offset == 0x70:
             return 0xF8 | self._wram_bank_register
         return 0xFF
@@ -609,6 +615,9 @@ class Bus:
             return True
         if offset == 0x6B:
             self._write_cgb_palette_data(0x6A, self.obj_palette_ram, value)
+            return True
+        if offset == 0x6C:
+            self.io[0x6C] = value & 0x01
             return True
         if offset == 0x70:
             self._wram_bank_register = value & 0x07

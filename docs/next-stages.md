@@ -10,7 +10,7 @@ GBemu is now a playable DMG-first emulator for the current primary real-ROM targ
 
 The project is not cycle-perfect and not yet a broad commercial compatibility emulator. The strongest next work is to keep adding evidence while improving accuracy and tail-latency behavior.
 
-Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, functional audio, and CGB foundation startup/registers/banking/window ordering plus first-pass BG/window palette/tile-attribute rendering are in place. The largest remaining gaps are full pixel FIFO completeness, stricter APU suite/analog accuracy, broader commercial compatibility, full CGB OBJ/priority/timing/DMA behavior, and real link/SGB/peripheral behavior.
+Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, functional audio, and CGB foundation startup/registers/banking/window ordering plus first-pass BG/window palette/tile-attribute rendering and OBJ palette/priority rendering are in place. The largest remaining gaps are full pixel FIFO completeness, stricter APU suite/analog accuracy, broader commercial compatibility, CGB timing/DMA/boot behavior, and real link/SGB/peripheral behavior.
 
 ## Completed Milestones
 
@@ -35,6 +35,7 @@ Done:
 - LCD modes, `LY`/`STAT`, VBlank, line-153 wrap, DMG STAT write quirk, and LCD enable/disable behavior.
 - DMG background, window, and sprite rendering with palette mapping, scroll wrapping, sprite priority, 8x16 selection, flips, OBP selection, and 10-sprites-per-line selection.
 - First-pass CGB BG/window rendering with BG palette RAM colors, tile-map palette attributes, tile VRAM-bank selection, X/Y flips, RGB framebuffer output, and Tk/PPM/BMP RGB export support.
+- First-pass CGB OBJ rendering with OBJ palette RAM colors, OBJ palette attributes, OBJ tile VRAM-bank selection, CGB OAM-order priority, `FF6C`/OPRI DMG-style priority selection, BG priority attributes, and LCDC.0 priority behavior.
 - PPU-mode CPU access restrictions for VRAM/OAM.
 - OAM DMA bus blocking and line/sprite visibility effects.
 - Selected mode-3 timing model for SCX, SCY, WX, window enable/disable, LCDC source changes, OBJ enable/disable, OBJ size changes, palette writes, sprite/window stalls, and tile-data fetch-boundary cases.
@@ -111,7 +112,7 @@ Remaining:
 
 ### Stage 6: CGB Foundation
 
-Status: foundation and first-pass BG/window rendering started; not a compatibility mode yet.
+Status: foundation, first-pass BG/window rendering, and first-pass OBJ palette/priority rendering started; not a compatibility mode yet.
 
 Done:
 
@@ -119,19 +120,20 @@ Done:
 - Explicit emulator mode selection with default DMG behavior preserved for DMG/CGB-enhanced ROMs, forced CGB mode for CGB-only ROMs, and `--mode dmg|cgb|auto` available in the CLI.
 - Basic CGB post-boot CPU identity, including `A=$11`.
 - DMG-mode CGB-only IO remains inert.
-- CGB-mode foundations for `FF4F` VRAM bank select, `FF70` WRAM bank select, `FF68`-`FF6B` palette RAM/indexing, and KEY1 double-speed placeholder state.
+- CGB-mode foundations for `FF4F` VRAM bank select, `FF70` WRAM bank select, `FF68`-`FF6C` palette RAM/indexing and OPRI, and KEY1 double-speed placeholder state.
 - First-pass CGB BG/window renderer support for BG palette RAM colors, tile-map palette attributes, tile VRAM-bank attributes, and X/Y flip attributes.
+- First-pass CGB OBJ renderer support for OBJ palette RAM colors, OBJ palette attributes, OBJ tile VRAM-bank attributes, CGB OAM-order priority, `FF6C`/OPRI DMG-style priority mode, BG priority attributes, and LCDC.0 priority behavior.
 - RGB framebuffer encoding plus Tk/PPM/BMP output support while preserving the DMG shade fast path.
 - Unit coverage for default DMG behavior and exposed CGB behavior.
 - `scripts\verify_cgb_foundation.py` synthetic smoke verifier, including a local Pokemon Crystal header/startup check when `roms\crystal.gbc` exists.
 - `scripts\verify_crystal_window_startup.py` headless/window smoke verifier, confirming Crystal reaches the first frame in CGB mode and Tk presents before first-frame emulation begins.
-- `scripts\verify_crystal_cgb_render.py` render smoke verifier, including synthetic CGB BG palette/bank/flip checks and Pokemon Crystal RGB render checks.
+- `scripts\verify_crystal_cgb_render.py` render smoke verifier, including synthetic CGB BG palette/bank/flip checks, synthetic CGB OBJ palette/bank/priority checks, and Pokemon Crystal RGB render checks.
 
 Remaining:
 
-- Full CGB OBJ palette and priority rules.
 - HDMA/GDMA.
 - Double-speed timing model.
+- Broader CGB render oracles and exact CGB raster/FIFO timing.
 - Full CGB boot behavior and real CGB ROM compatibility gates.
 
 ## Active Regression Gates
@@ -241,4 +243,4 @@ The current Pokemon Red speedups are guarded by exact ROM byte patterns, LCD sta
 
 ### 6. Grow CGB From The Foundation
 
-CGB is a large cross-cutting feature, not a small rendering option. Keep the current foundation narrow and verified, then add one subsystem at a time: full OBJ palette/priority behavior, HDMA, double-speed timing, broader CGB render oracles, and CGB boot behavior.
+CGB is a large cross-cutting feature, not a small rendering option. Keep the current foundation narrow and verified, then add one subsystem at a time: HDMA/GDMA, double-speed timing, broader CGB render oracles, exact CGB raster/FIFO timing, and CGB boot behavior.

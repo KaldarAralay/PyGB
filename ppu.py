@@ -171,6 +171,7 @@ class PPU:
         self._line_render_segments: list[tuple[int, PPURenderState]] | None = None
         self._line_row: list[int] | None = None
         self._line_bg_color_ids: list[int] | None = None
+        self._line_bg_priorities: list[bool] | None = None
         self._line_bg_tile_data_sources: dict[int, tuple[int | None, int | None]] | None = None
         self._line_bg_tile_map_scy: dict[int, int] | None = None
         self._line_bg_tile_data_scy: dict[int, tuple[int | None, int | None]] | None = None
@@ -1730,9 +1731,10 @@ class PPU:
             self.framebuffer[y] = [0 for _ in range(SCREEN_WIDTH)]
             return
         bg_color_ids = [0 for _ in range(SCREEN_WIDTH)]
+        bg_priorities = [False for _ in range(SCREEN_WIDTH)]
         row = [0 for _ in range(SCREEN_WIDTH)]
         window_used = self._render_scanline_segment(
-            state, y, row, bg_color_ids, 0, SCREEN_WIDTH
+            state, y, row, bg_color_ids, bg_priorities, 0, SCREEN_WIDTH
         )
 
         if window_used:
@@ -1896,6 +1898,7 @@ class PPU:
         y: int,
         row: list[int],
         bg_color_ids: list[int],
+        bg_priorities: list[bool],
         start_x: int,
         end_x: int,
     ) -> None:
@@ -1907,6 +1910,7 @@ class PPU:
                 y,
                 row,
                 bg_color_ids,
+                bg_priorities,
                 start_x,
                 end_x,
                 bg_map_base,
@@ -1946,6 +1950,7 @@ class PPU:
         state: PPURenderState,
         row: list[int],
         bg_color_ids: list[int],
+        bg_priorities: list[bool],
         start_x: int,
         end_x: int,
     ) -> None:
@@ -1960,6 +1965,7 @@ class PPU:
                 state,
                 row,
                 bg_color_ids,
+                bg_priorities,
                 start_x,
                 end_x,
                 window_map_base,
@@ -2004,6 +2010,7 @@ class PPU:
         y: int,
         row: list[int],
         bg_color_ids: list[int],
+        bg_priorities: list[bool],
         start_x: int,
         end_x: int,
         map_base: int,
@@ -2014,7 +2021,7 @@ class PPU:
         for screen_x in range(start_x, end_x):
             bg_x = (screen_x + scx) & 0xFF
             bg_y = (y + state.scy) & 0xFF
-            color_id, pixel = self._cgb_tilemap_pixel(
+            color_id, pixel, priority = self._cgb_tilemap_pixel(
                 state.lcdc,
                 map_base,
                 bg_x,
@@ -2022,6 +2029,7 @@ class PPU:
                 screen_x=screen_x,
             )
             bg_color_ids[screen_x] = color_id
+            bg_priorities[screen_x] = priority
             row[screen_x] = pixel
 
     def _render_cgb_window_line(
@@ -2029,6 +2037,7 @@ class PPU:
         state: PPURenderState,
         row: list[int],
         bg_color_ids: list[int],
+        bg_priorities: list[bool],
         start_x: int,
         end_x: int,
         map_base: int,
@@ -2041,11 +2050,12 @@ class PPU:
             if screen_x == reactivation_glitch_x:
                 color_id = 0
                 pixel = self._map_cgb_bg_palette(0, color_id)
+                priority = False
             else:
                 window_x = screen_x - wx
                 if reactivation_glitch_x is not None and screen_x > reactivation_glitch_x:
                     window_x -= 1
-                color_id, pixel = self._cgb_tilemap_pixel(
+                color_id, pixel, priority = self._cgb_tilemap_pixel(
                     state.lcdc,
                     map_base,
                     window_x,
@@ -2053,6 +2063,7 @@ class PPU:
                     screen_x=screen_x,
                 )
             bg_color_ids[screen_x] = color_id
+            bg_priorities[screen_x] = priority
             row[screen_x] = pixel
 
     def _can_fast_render_tilemap(self) -> bool:
@@ -2231,6 +2242,7 @@ class PPU:
         y: int,
         row: list[int],
         bg_color_ids: list[int],
+        bg_priorities: list[bool],
         start_x: int,
         end_x: int,
     ) -> None:
@@ -2238,7 +2250,7 @@ class PPU:
             return
 
         selected = self._selected_sprites_for_line(state.lcdc, y)
-        selected.sort(key=lambda sprite: (sprite[0], sprite[1]))
+        selected.sort(key=self._sprite_draw_priority_key)
         if self.profile_enabled and selected:
             sprite_pixels = 0
             for sprite_x, _index, _sprite_y, _tile_id, _attrs, _raw_x in selected:
@@ -2303,9 +2315,38 @@ class PPU:
                 if color_id == 0:
                     continue
                 claimed[claim_index] = True
-                if attrs & OBJ_PRIORITY and bg_color_ids[x] != 0:
+                if self._bg_hides_sprite_pixel(
+                    state.lcdc,
+                    attrs,
+                    bg_color_ids[x],
+                    bg_priorities[x],
+                ):
                     continue
                 row[x] = shades[color_id]
+
+    def _sprite_draw_priority_key(
+        self,
+        sprite: tuple[int, int, int, int, int, int],
+    ) -> tuple[int, int]:
+        sprite_x, index, *_rest = sprite
+        if self.bus.cgb_mode and not self.bus.cgb_object_priority_mode:
+            return (index, 0)
+        return (sprite_x, index)
+
+    def _bg_hides_sprite_pixel(
+        self,
+        lcdc: int,
+        attrs: int,
+        bg_color_id: int,
+        bg_priority: bool,
+    ) -> bool:
+        if bg_color_id == 0:
+            return False
+        if not self.bus.cgb_mode:
+            return bool(attrs & OBJ_PRIORITY)
+        if not lcdc & LCDC_BG_WINDOW_ENABLE:
+            return False
+        return bg_priority or bool(attrs & OBJ_PRIORITY)
 
     def _tilemap_pixel(
         self,
@@ -2360,7 +2401,7 @@ class PPU:
         y: int,
         *,
         screen_x: int | None = None,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, bool]:
         needs_tile_x = screen_x is not None and bool(self._line_bg_tile_map_scy)
         tile_x = self._bg_tile_screen_x(screen_x) if needs_tile_x else None
         map_y = y
@@ -2385,7 +2426,11 @@ class PPU:
         hi = self.bus.vram[bank_base + ((tile_address + 1) & 0x1FFF)]
         bit = 7 - tile_x_pixel
         color_id = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1)
-        return color_id, self._map_cgb_bg_palette(attrs & CGB_ATTR_PALETTE_MASK, color_id)
+        return (
+            color_id,
+            self._map_cgb_bg_palette(attrs & CGB_ATTR_PALETTE_MASK, color_id),
+            bool(attrs & CGB_ATTR_PRIORITY),
+        )
 
     def _tile_pixel_with_byte_sources_and_rows(
         self,
@@ -2429,7 +2474,7 @@ class PPU:
 
     def _mode3_duration_for_line(self, state: PPURenderState, y: int) -> int:
         duration = MODE3_DOTS + (state.scx & 0x07)
-        if (state.lcdc & LCDC_BG_WINDOW_ENABLE) and self._window_visible_on_line(state):
+        if self._bg_window_layer_enabled(state.lcdc) and self._window_visible_on_line(state):
             duration += self._window_mode3_penalty(state)
         duration += self._obj_mode3_penalty(state, y)
         return min(duration, MODE3_MAX_DOTS)
@@ -2439,6 +2484,9 @@ class PPU:
         if state.wx == 0 and (state.scx & 0x07):
             penalty += 1
         return penalty
+
+    def _bg_window_layer_enabled(self, lcdc: int) -> bool:
+        return self.bus.cgb_mode or bool(lcdc & LCDC_BG_WINDOW_ENABLE)
 
     def _line_scx(self, state: PPURenderState) -> int:
         return state.scx
@@ -2661,6 +2709,7 @@ class PPU:
             self._line_render_segments is None
             or self._line_row is None
             or self._line_bg_color_ids is None
+            or self._line_bg_priorities is None
         ):
             return
         render_x = max(0, min(SCREEN_WIDTH, start_x))
@@ -2672,6 +2721,7 @@ class PPU:
                 self._scanline,
                 self._line_row,
                 self._line_bg_color_ids,
+                self._line_bg_priorities,
                 render_x,
                 segment_end,
             )
@@ -2707,7 +2757,7 @@ class PPU:
         return events
 
     def _obj_pixel_tile_context(self, state: PPURenderState, y: int, x: int) -> tuple[tuple[str, int, int], int]:
-        if (state.lcdc & LCDC_BG_WINDOW_ENABLE) and self._window_visible_on_line(state):
+        if self._bg_window_layer_enabled(state.lcdc) and self._window_visible_on_line(state):
             wx = state.wx - 7
             if x >= wx:
                 window_x = x - wx
@@ -2741,6 +2791,7 @@ class PPU:
         self._line_render_segments = [(0, self._line_render_state)]
         self._line_row = [0] * SCREEN_WIDTH
         self._line_bg_color_ids = [0] * SCREEN_WIDTH
+        self._line_bg_priorities = [False] * SCREEN_WIDTH
         self._line_bg_tile_data_sources = {}
         self._line_bg_tile_map_scy = {}
         self._line_bg_tile_data_scy = {}
@@ -2785,6 +2836,7 @@ class PPU:
             self._line_render_state is None
             or self._line_row is None
             or self._line_bg_color_ids is None
+            or self._line_bg_priorities is None
         ):
             self.render_scanline(y)
             self._clear_line_rendering()
@@ -2836,6 +2888,7 @@ class PPU:
                     self._scanline,
                     self._line_row,
                     self._line_bg_color_ids,
+                    self._line_bg_priorities,
                     self._line_render_x,
                     segment_end,
                 )
@@ -2851,7 +2904,7 @@ class PPU:
         end_x: int,
     ) -> PPURenderState:
         window_active = (
-            bool(state.lcdc & LCDC_BG_WINDOW_ENABLE)
+            self._bg_window_layer_enabled(state.lcdc)
             and self._window_visible_on_line(state)
             and end_x > max(0, state.wx - 7)
         )
@@ -2875,6 +2928,7 @@ class PPU:
         y: int,
         row: list[int],
         bg_color_ids: list[int],
+        bg_priorities: list[bool],
         start_x: int,
         end_x: int,
     ) -> bool:
@@ -2886,26 +2940,28 @@ class PPU:
             for x in range(start_x, end_x):
                 row[x] = 0
                 bg_color_ids[x] = 0
+                bg_priorities[x] = False
             return False
 
         window_used = False
-        if state.lcdc & LCDC_BG_WINDOW_ENABLE:
-            self._render_background_line(state, y, row, bg_color_ids, start_x, end_x)
+        if self._bg_window_layer_enabled(state.lcdc):
+            self._render_background_line(state, y, row, bg_color_ids, bg_priorities, start_x, end_x)
             if self._window_visible_on_line(state):
                 wx = state.wx - 7
                 window_start_x = max(0, wx)
                 if end_x > window_start_x:
                     window_used = True
-                    self._render_window_line(state, row, bg_color_ids, start_x, end_x)
+                    self._render_window_line(state, row, bg_color_ids, bg_priorities, start_x, end_x)
         else:
             for x in range(start_x, end_x):
                 row[x] = 0
                 bg_color_ids[x] = 0
+                bg_priorities[x] = False
 
-        self._apply_window_start_glitch(state, row, bg_color_ids, start_x, end_x)
-        self._apply_window_enable_cancel_glitch(state, row, bg_color_ids, start_x, end_x)
+        self._apply_window_start_glitch(state, row, bg_color_ids, bg_priorities, start_x, end_x)
+        self._apply_window_enable_cancel_glitch(state, row, bg_color_ids, bg_priorities, start_x, end_x)
         if state.lcdc & LCDC_OBJ_ENABLE:
-            self._render_sprites_line(state, y, row, bg_color_ids, start_x, end_x)
+            self._render_sprites_line(state, y, row, bg_color_ids, bg_priorities, start_x, end_x)
         return window_used
 
     def _apply_window_start_glitch(
@@ -2913,6 +2969,7 @@ class PPU:
         state: PPURenderState,
         row: list[int],
         bg_color_ids: list[int],
+        bg_priorities: list[bool],
         start_x: int,
         end_x: int,
     ) -> None:
@@ -2925,6 +2982,7 @@ class PPU:
         ):
             return
         bg_color_ids[glitch_x] = 0
+        bg_priorities[glitch_x] = False
         row[glitch_x] = self._map_bg_palette(state.bgp, 0, 0)
 
     def _apply_window_enable_cancel_glitch(
@@ -2932,6 +2990,7 @@ class PPU:
         state: PPURenderState,
         row: list[int],
         bg_color_ids: list[int],
+        bg_priorities: list[bool],
         start_x: int,
         end_x: int,
     ) -> None:
@@ -2939,6 +2998,7 @@ class PPU:
         if glitch_x is None or not start_x <= glitch_x < end_x:
             return
         bg_color_ids[glitch_x] = 0
+        bg_priorities[glitch_x] = False
         row[glitch_x] = self._map_bg_palette(state.bgp, 0, 0)
 
     def _visible_pixels_emitted(self) -> int:
@@ -3058,7 +3118,7 @@ class PPU:
         return events
 
     def _window_penalty_events(self, state: PPURenderState) -> list[tuple[int, int]]:
-        if (state.lcdc & LCDC_BG_WINDOW_ENABLE) and self._window_visible_on_line(state):
+        if self._bg_window_layer_enabled(state.lcdc) and self._window_visible_on_line(state):
             penalty = 6
             if state.wx == 0 and (state.scx & 0x07):
                 penalty += 1
@@ -3093,6 +3153,7 @@ class PPU:
         self._line_render_segments = None
         self._line_row = None
         self._line_bg_color_ids = None
+        self._line_bg_priorities = None
         self._line_bg_tile_data_sources = None
         self._line_bg_tile_map_scy = None
         self._line_bg_tile_data_scy = None

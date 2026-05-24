@@ -49,6 +49,25 @@ def set_cgb_bg_color(bus: Bus, palette: int, color_id: int, rgb555: int) -> None
     bus.bg_palette_ram[offset + 1] = (rgb555 >> 8) & 0x7F
 
 
+def set_cgb_obj_color(bus: Bus, palette: int, color_id: int, rgb555: int) -> None:
+    offset = palette * 8 + color_id * 2
+    bus.obj_palette_ram[offset] = rgb555 & 0xFF
+    bus.obj_palette_ram[offset + 1] = (rgb555 >> 8) & 0x7F
+
+
+def set_sprite(
+    bus: Bus,
+    index: int,
+    *,
+    y: int = 16,
+    x: int = 8,
+    tile: int = 2,
+    attrs: int = 0,
+) -> None:
+    offset = index * 4
+    bus.oam[offset : offset + 4] = bytes([y, x, tile, attrs])
+
+
 def make_cgb_bus() -> Bus:
     return Bus(Cartridge(make_cgb_rom()), serial_sink=lambda _: None, mode=EmulationMode.CGB)
 
@@ -96,12 +115,101 @@ def run_synthetic_attribute_checks() -> tuple[dict[str, Any], list[str]]:
     if flip_pixel != flip_expected:
         failures.append("synthetic: BG attribute X/Y flip bits did not mirror tile pixels")
 
+    obj_palette_bus = make_cgb_bus()
+    obj_palette_bus.write8(0xFF40, 0x93)
+    set_cgb_solid_tile(obj_palette_bus, 0, 2, 2)
+    set_cgb_obj_color(obj_palette_bus, 5, 2, 0x001F)
+    set_sprite(obj_palette_bus, 0, attrs=0x05)
+    obj_palette_bus.ppu.render_scanline(0)
+    obj_palette_pixel = obj_palette_bus.ppu.framebuffer[0][0]
+    obj_palette_expected = rgb_to_framebuffer_pixel(255, 0, 0)
+    if obj_palette_pixel != obj_palette_expected:
+        failures.append("synthetic: OBJ palette attribute did not select OBP5 color 2")
+
+    obj_bank_bus = make_cgb_bus()
+    obj_bank_bus.write8(0xFF40, 0x93)
+    set_cgb_solid_tile(obj_bank_bus, 0, 2, 1)
+    set_cgb_solid_tile(obj_bank_bus, 1, 2, 3)
+    set_cgb_obj_color(obj_bank_bus, 0, 1, 0x001F)
+    set_cgb_obj_color(obj_bank_bus, 0, 3, 0x7C00)
+    set_sprite(obj_bank_bus, 0, attrs=0x08)
+    obj_bank_bus.ppu.render_scanline(0)
+    obj_bank_pixel = obj_bank_bus.ppu.framebuffer[0][0]
+    obj_bank_expected = rgb_to_framebuffer_pixel(0, 0, 255)
+    if obj_bank_pixel != obj_bank_expected:
+        failures.append("synthetic: OBJ attribute bit 3 did not select tile data from VRAM bank 1")
+
+    obj_order_bus = make_cgb_bus()
+    obj_order_bus.write8(0xFF40, 0x93)
+    set_cgb_solid_tile(obj_order_bus, 0, 3, 1)
+    set_cgb_solid_tile(obj_order_bus, 0, 4, 2)
+    set_cgb_obj_color(obj_order_bus, 0, 1, 0x001F)
+    set_cgb_obj_color(obj_order_bus, 0, 2, 0x03E0)
+    set_sprite(obj_order_bus, 0, x=16, tile=3)
+    set_sprite(obj_order_bus, 1, x=12, tile=4)
+    obj_order_bus.ppu.render_scanline(0)
+    obj_order_pixel = obj_order_bus.ppu.framebuffer[0][8]
+    obj_order_expected = rgb_to_framebuffer_pixel(255, 0, 0)
+    if obj_order_pixel != obj_order_expected:
+        failures.append("synthetic: CGB OBJ priority did not prefer the earlier OAM entry")
+
+    obj_opri_bus = make_cgb_bus()
+    obj_opri_bus.write8(0xFF40, 0x93)
+    obj_opri_bus.write8(0xFF6C, 0x01)
+    set_cgb_solid_tile(obj_opri_bus, 0, 3, 1)
+    set_cgb_solid_tile(obj_opri_bus, 0, 4, 2)
+    set_cgb_obj_color(obj_opri_bus, 0, 1, 0x001F)
+    set_cgb_obj_color(obj_opri_bus, 0, 2, 0x03E0)
+    set_sprite(obj_opri_bus, 0, x=16, tile=3)
+    set_sprite(obj_opri_bus, 1, x=12, tile=4)
+    obj_opri_bus.ppu.render_scanline(0)
+    obj_opri_pixel = obj_opri_bus.ppu.framebuffer[0][8]
+    obj_opri_expected = rgb_to_framebuffer_pixel(0, 255, 0)
+    if obj_opri_pixel != obj_opri_expected:
+        failures.append("synthetic: OPRI DMG-style mode did not prefer the lower X OBJ")
+
+    obj_bg_priority_bus = make_cgb_bus()
+    obj_bg_priority_bus.write8(0xFF40, 0x93)
+    set_cgb_solid_tile(obj_bg_priority_bus, 0, 0, 1)
+    set_cgb_solid_tile(obj_bg_priority_bus, 0, 2, 2)
+    set_cgb_bg_color(obj_bg_priority_bus, 0, 1, 0x03E0)
+    set_cgb_obj_color(obj_bg_priority_bus, 0, 2, 0x001F)
+    obj_bg_priority_bus.vram[0x1800] = 0
+    obj_bg_priority_bus.vram[0x2000 + 0x1800] = 0x80
+    set_sprite(obj_bg_priority_bus, 0)
+    obj_bg_priority_bus.ppu.render_scanline(0)
+    obj_bg_priority_pixel = obj_bg_priority_bus.ppu.framebuffer[0][0]
+    obj_bg_priority_expected = rgb_to_framebuffer_pixel(0, 255, 0)
+    if obj_bg_priority_pixel != obj_bg_priority_expected:
+        failures.append("synthetic: CGB BG attribute priority did not hide the OBJ pixel")
+
+    obj_lcdc_priority_bus = make_cgb_bus()
+    obj_lcdc_priority_bus.write8(0xFF40, 0x92)
+    set_cgb_solid_tile(obj_lcdc_priority_bus, 0, 0, 1)
+    set_cgb_solid_tile(obj_lcdc_priority_bus, 0, 2, 2)
+    set_cgb_bg_color(obj_lcdc_priority_bus, 0, 1, 0x03E0)
+    set_cgb_obj_color(obj_lcdc_priority_bus, 0, 2, 0x001F)
+    obj_lcdc_priority_bus.vram[0x1800] = 0
+    obj_lcdc_priority_bus.vram[0x2000 + 0x1800] = 0x80
+    set_sprite(obj_lcdc_priority_bus, 0, attrs=0x80)
+    obj_lcdc_priority_bus.ppu.render_scanline(0)
+    obj_lcdc_priority_pixel = obj_lcdc_priority_bus.ppu.framebuffer[0][0]
+    obj_lcdc_priority_expected = rgb_to_framebuffer_pixel(255, 0, 0)
+    if obj_lcdc_priority_pixel != obj_lcdc_priority_expected:
+        failures.append("synthetic: CGB LCDC bit 0 clear did not force OBJ over BG priority")
+
     return (
         {
             "status": "pass" if not failures else "fail",
-            "palette_pixel": framebuffer_pixel_to_rgb(palette_pixel),
-            "bank_pixel": framebuffer_pixel_to_rgb(bank_pixel),
-            "flip_pixel": framebuffer_pixel_to_rgb(flip_pixel),
+            "bg_palette_pixel": framebuffer_pixel_to_rgb(palette_pixel),
+            "bg_bank_pixel": framebuffer_pixel_to_rgb(bank_pixel),
+            "bg_flip_pixel": framebuffer_pixel_to_rgb(flip_pixel),
+            "obj_palette_pixel": framebuffer_pixel_to_rgb(obj_palette_pixel),
+            "obj_bank_pixel": framebuffer_pixel_to_rgb(obj_bank_pixel),
+            "obj_oam_priority_pixel": framebuffer_pixel_to_rgb(obj_order_pixel),
+            "obj_opri_pixel": framebuffer_pixel_to_rgb(obj_opri_pixel),
+            "obj_bg_priority_pixel": framebuffer_pixel_to_rgb(obj_bg_priority_pixel),
+            "obj_lcdc_priority_pixel": framebuffer_pixel_to_rgb(obj_lcdc_priority_pixel),
         },
         failures,
     )
@@ -185,7 +293,7 @@ def run_crystal_render_smoke(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Verify first-pass CGB BG palette and tile-attribute rendering."
+        description="Verify first-pass CGB BG/window attributes and OBJ palette/priority rendering."
     )
     parser.add_argument("--rom", type=Path, default=ROOT / "roms" / "crystal.gbc")
     parser.add_argument("--frames", type=int, default=60)

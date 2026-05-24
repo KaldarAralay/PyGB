@@ -64,6 +64,12 @@ def set_cgb_bg_color(bus: Bus, palette: int, color_id: int, rgb555: int) -> None
     bus.bg_palette_ram[offset + 1] = (rgb555 >> 8) & 0x7F
 
 
+def set_cgb_obj_color(bus: Bus, palette: int, color_id: int, rgb555: int) -> None:
+    offset = palette * 8 + color_id * 2
+    bus.obj_palette_ram[offset] = rgb555 & 0xFF
+    bus.obj_palette_ram[offset + 1] = (rgb555 >> 8) & 0x7F
+
+
 def set_sprite(bus: Bus, index: int, *, y: int = 16, x: int = 8, tile: int = 2, attrs: int = 0) -> None:
     offset = index * 4
     bus.oam[offset : offset + 4] = bytes([y, x, tile, attrs])
@@ -1877,6 +1883,106 @@ class PPUTests(unittest.TestCase):
         bus.ppu.render_scanline(0)
 
         self.assertEqual(bus.ppu.framebuffer[0][8], 2)
+
+    def test_cgb_sprite_uses_obj_palette_ram(self) -> None:
+        bus = make_bus(EmulationMode.CGB)
+        bus.write8(0xFF40, 0x93)
+        set_cgb_solid_tile(bus, 0, 2, 2)
+        set_cgb_obj_color(bus, 5, 2, 0x001F)
+        set_sprite(bus, 0, attrs=0x05)
+
+        bus.ppu.render_scanline(0)
+
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(255, 0, 0))
+
+    def test_cgb_sprite_attribute_selects_tile_vram_bank(self) -> None:
+        bus = make_bus(EmulationMode.CGB)
+        bus.write8(0xFF40, 0x93)
+        set_cgb_solid_tile(bus, 0, 2, 1)
+        set_cgb_solid_tile(bus, 1, 2, 3)
+        set_cgb_obj_color(bus, 0, 1, 0x001F)
+        set_cgb_obj_color(bus, 0, 3, 0x7C00)
+        set_sprite(bus, 0, attrs=0x08)
+
+        bus.ppu.render_scanline(0)
+
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 0, 255))
+
+    def test_cgb_oam_priority_beats_x_priority(self) -> None:
+        bus = make_bus(EmulationMode.CGB)
+        bus.write8(0xFF40, 0x93)
+        set_cgb_solid_tile(bus, 0, 3, 1)
+        set_cgb_solid_tile(bus, 0, 4, 2)
+        set_cgb_obj_color(bus, 0, 1, 0x001F)
+        set_cgb_obj_color(bus, 0, 2, 0x03E0)
+        set_sprite(bus, 0, x=16, tile=3)
+        set_sprite(bus, 1, x=12, tile=4)
+
+        bus.ppu.render_scanline(0)
+
+        self.assertEqual(bus.ppu.framebuffer[0][8], rgb_to_framebuffer_pixel(255, 0, 0))
+
+    def test_cgb_opri_dmg_mode_uses_x_priority(self) -> None:
+        bus = make_bus(EmulationMode.CGB)
+        bus.write8(0xFF40, 0x93)
+        bus.write8(0xFF6C, 0x01)
+        set_cgb_solid_tile(bus, 0, 3, 1)
+        set_cgb_solid_tile(bus, 0, 4, 2)
+        set_cgb_obj_color(bus, 0, 1, 0x001F)
+        set_cgb_obj_color(bus, 0, 2, 0x03E0)
+        set_sprite(bus, 0, x=16, tile=3)
+        set_sprite(bus, 1, x=12, tile=4)
+
+        bus.ppu.render_scanline(0)
+
+        self.assertEqual(bus.ppu.framebuffer[0][8], rgb_to_framebuffer_pixel(0, 255, 0))
+
+    def test_cgb_oam_priority_masks_lower_sprite_before_bg_priority(self) -> None:
+        bus = make_bus(EmulationMode.CGB)
+        bus.write8(0xFF40, 0x93)
+        set_cgb_solid_tile(bus, 0, 0, 1)
+        set_cgb_solid_tile(bus, 0, 3, 1)
+        set_cgb_solid_tile(bus, 0, 4, 2)
+        set_cgb_bg_color(bus, 0, 1, 0x03E0)
+        set_cgb_obj_color(bus, 0, 1, 0x001F)
+        set_cgb_obj_color(bus, 0, 2, 0x7C00)
+        bus.vram[0x1800] = 0
+        set_sprite(bus, 0, tile=3, attrs=0x80)
+        set_sprite(bus, 1, tile=4)
+
+        bus.ppu.render_scanline(0)
+
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 255, 0))
+
+    def test_cgb_bg_attribute_priority_hides_sprite(self) -> None:
+        bus = make_bus(EmulationMode.CGB)
+        bus.write8(0xFF40, 0x93)
+        set_cgb_solid_tile(bus, 0, 0, 1)
+        set_cgb_solid_tile(bus, 0, 2, 2)
+        set_cgb_bg_color(bus, 0, 1, 0x03E0)
+        set_cgb_obj_color(bus, 0, 2, 0x001F)
+        bus.vram[0x1800] = 0
+        bus.vram[0x2000 + 0x1800] = 0x80
+        set_sprite(bus, 0)
+
+        bus.ppu.render_scanline(0)
+
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 255, 0))
+
+    def test_cgb_lcdc_bit_zero_clear_allows_sprite_over_priority_background(self) -> None:
+        bus = make_bus(EmulationMode.CGB)
+        bus.write8(0xFF40, 0x92)
+        set_cgb_solid_tile(bus, 0, 0, 1)
+        set_cgb_solid_tile(bus, 0, 2, 2)
+        set_cgb_bg_color(bus, 0, 1, 0x03E0)
+        set_cgb_obj_color(bus, 0, 2, 0x001F)
+        bus.vram[0x1800] = 0
+        bus.vram[0x2000 + 0x1800] = 0x80
+        set_sprite(bus, 0, attrs=0x80)
+
+        bus.ppu.render_scanline(0)
+
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(255, 0, 0))
 
     def test_offscreen_sprites_count_toward_scanline_limit(self) -> None:
         bus = make_bus()

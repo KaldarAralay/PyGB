@@ -384,6 +384,22 @@ class CartridgeBusTests(unittest.TestCase):
         self.assertEqual(bus.read8(0xD000), 0x22)
         self.assertEqual(bus.read8(0xF000), 0x22)
 
+    def test_cgb_mode_exposes_object_priority_mode_register(self) -> None:
+        bus = Bus(
+            Cartridge(make_rom(cgb_flag=0x80)),
+            serial_sink=lambda _: None,
+            mode=EmulationMode.CGB,
+        )
+
+        self.assertEqual(bus.cgb_object_priority_mode, 0)
+        self.assertEqual(bus.read8(0xFF6C), 0xFE)
+        bus.write8(0xFF6C, 0xFF)
+        self.assertEqual(bus.cgb_object_priority_mode, 1)
+        self.assertEqual(bus.read8(0xFF6C), 0xFF)
+        bus.write8(0xFF6C, 0x00)
+        self.assertEqual(bus.cgb_object_priority_mode, 0)
+        self.assertEqual(bus.read8(0xFF6C), 0xFE)
+
     def test_cgb_mode_exposes_palette_registers(self) -> None:
         bus = Bus(
             Cartridge(make_rom(cgb_flag=0x80)),
