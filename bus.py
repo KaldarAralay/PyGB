@@ -704,6 +704,13 @@ class Bus:
         }
         for offset, value in defaults.items():
             self.io[offset] = value
+        if self.cgb_mode:
+            cgb_defaults = {
+                0x02: 0x7F,
+                0x4D: 0x7E,
+            }
+            for offset, value in cgb_defaults.items():
+                self.io[offset] = value
 
     def _initialize_vram_defaults(self) -> None:
         # The DMG boot ROM leaves the registered-trademark logo tile in VRAM.

@@ -54,7 +54,10 @@ class Emulator:
     def _resolve_mode(mode: EmulationMode | str, cartridge: Cartridge) -> EmulationMode:
         if isinstance(mode, str) and mode.strip().lower() == "auto":
             return EmulationMode.CGB if cartridge.header.cgb_supported else EmulationMode.DMG
-        return EmulationMode.coerce(mode)
+        requested = EmulationMode.coerce(mode)
+        if requested == EmulationMode.DMG and cartridge.header.cgb_only:
+            return EmulationMode.CGB
+        return requested
 
     def set_buttons(self, buttons: str | set[str]) -> None:
         if isinstance(buttons, str):

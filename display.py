@@ -67,6 +67,7 @@ class DisplayConfig:
     title: str = "GBemu"
     max_instructions_per_frame: int = 200_000
     profile_window: bool = False
+    profile_startup: bool = False
     profile_interval: int = 60
     audio_enabled: bool = False
     audio_sample_rate: int = DEFAULT_SAMPLE_RATE
@@ -266,6 +267,7 @@ class TkDisplay:
         self._profile_spike_audio_queue_ms: float | None = None
         self._profile_spike_cause = "none"
         self._profile_report_started = time.perf_counter()
+        self._startup_first_frame_logged = False
         self._audio_capture: WavAudioWriter | None = None
         self.emulator.set_buttons(self.pressed)
         self.emulator.bus.apu.set_output_enabled(self._audio_enabled)
@@ -297,9 +299,11 @@ class TkDisplay:
         if self._audio_enabled:
             self._start_audio(raise_on_error=True)
         self._update_title()
+        self._log_startup("tk-created")
+        self._present_initial_window()
         self._running = True
         self._profile_report_started = time.perf_counter()
-        self._schedule_next_frame(0)
+        self._schedule_next_frame(1)
         self._root.mainloop()
 
     def _on_key_press(self, event) -> None:
@@ -372,6 +376,8 @@ class TkDisplay:
             cpu = getattr(self.emulator, "cpu", None)
             cpu_instructions_before = getattr(cpu, "instructions", 0)
             cpu_cycles_before = getattr(cpu, "cycles", 0)
+            frame_before = self.emulator.bus.ppu.frame_count
+            pc_before = getattr(cpu, "pc", 0)
             self.emulator.run(
                 max_instructions=self.config.max_instructions_per_frame,
                 max_frames=1,
@@ -379,6 +385,7 @@ class TkDisplay:
                 trace_sink=self._trace_sink,
             )
             run_elapsed = time.perf_counter() - run_started
+            frame_after = self.emulator.bus.ppu.frame_count
             cpu_instructions = max(
                 0,
                 getattr(cpu, "instructions", 0) - cpu_instructions_before,
@@ -394,6 +401,15 @@ class TkDisplay:
             draw_started = time.perf_counter()
             self._draw_frame()
             draw_elapsed = time.perf_counter() - draw_started
+            self._log_first_frame_startup(
+                run_elapsed=run_elapsed,
+                draw_elapsed=draw_elapsed,
+                cpu_instructions=cpu_instructions,
+                cpu_cycles=cpu_cycles,
+                frame_before=frame_before,
+                frame_after=frame_after,
+                pc_before=pc_before,
+            )
         else:
             apu_profile = None
         elapsed = time.perf_counter() - started
@@ -437,6 +453,79 @@ class TkDisplay:
                 self.config.scale,
                 self.config.scale,
             )
+
+    def _present_initial_window(self) -> None:
+        if self._root is None:
+            return
+        self._draw_frame()
+        update_idletasks = getattr(self._root, "update_idletasks", None)
+        if update_idletasks is not None:
+            update_idletasks()
+        update = getattr(self._root, "update", None)
+        if update is not None:
+            update()
+        self._log_startup("tk-presented")
+
+    def _log_startup(self, event: str, **fields: object) -> None:
+        if not self.config.profile_startup:
+            return
+        cpu = getattr(self.emulator, "cpu", None)
+        bus = getattr(self.emulator, "bus", None)
+        ppu = getattr(bus, "ppu", None)
+        parts = [
+            "window-startup",
+            f"event={event}",
+            f"mode={getattr(getattr(bus, 'mode', None), 'value', 'unknown')}",
+            f"cgb={int(bool(getattr(bus, 'cgb_mode', False)))}",
+            f"frame={getattr(ppu, 'frame_count', 0)}",
+            f"ly={getattr(ppu, '_scanline', 0)}",
+            f"ppu_mode={getattr(ppu, 'mode', 0)}",
+            f"lcdc=0x{getattr(bus, 'io', bytearray(0x80))[0x40]:02X}",
+            f"pc=0x{getattr(cpu, 'pc', 0):04X}",
+            f"cpu_instr={getattr(cpu, 'instructions', 0)}",
+            f"cpu_cycles={getattr(cpu, 'cycles', 0)}",
+            f"vram_bank={getattr(bus, 'vram_bank', 0)}",
+            f"wram_bank={getattr(bus, 'wram_bank', 1)}",
+            f"key1=0x{getattr(bus, 'read8', lambda _address: 0xFF)(0xFF4D):02X}",
+            f"dma_active={int(bool(getattr(bus, 'oam_dma_active', False)))}",
+        ]
+        parts.extend(f"{name}={value}" for name, value in fields.items())
+        print(" ".join(parts), flush=True)
+
+    def _log_first_frame_startup(
+        self,
+        *,
+        run_elapsed: float,
+        draw_elapsed: float,
+        cpu_instructions: int,
+        cpu_cycles: int,
+        frame_before: int,
+        frame_after: int,
+        pc_before: int,
+    ) -> None:
+        if not self.config.profile_startup or self._startup_first_frame_logged:
+            return
+        self._startup_first_frame_logged = True
+        if frame_after > frame_before:
+            reason = "frame-reached"
+        elif cpu_instructions >= self.config.max_instructions_per_frame:
+            reason = "instruction-limit-no-frame"
+        elif cpu_instructions == 0 and cpu_cycles == 0:
+            reason = "cpu-no-progress"
+        else:
+            reason = "emulator-returned-no-frame"
+        self._log_startup(
+            "first-frame",
+            reason=reason,
+            frame_before=frame_before,
+            frame_after=frame_after,
+            frame_advanced=int(frame_after > frame_before),
+            run_ms=f"{run_elapsed * 1000:.2f}",
+            draw_ms=f"{draw_elapsed * 1000:.2f}",
+            frame_cpu_instr=cpu_instructions,
+            frame_cpu_cycles=cpu_cycles,
+            pc_before=f"0x{pc_before:04X}",
+        )
 
     def _apply_scripted_buttons(self) -> None:
         if self.button_script is None:

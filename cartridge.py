@@ -183,6 +183,7 @@ class CartridgeHeader:
         return "\n".join(
             [
                 f"Title: {self.title or '<empty>'}",
+                f"CGB support: {self.cgb_status} (${self.cgb_flag:02X})",
                 f"Cartridge type: {self.cartridge_type} (${self.cartridge_type_code:02X})",
                 f"ROM size: {self.rom_size} (${self.rom_size_code:02X})",
                 f"RAM size: {self.ram_size} (${self.ram_size_code:02X})",

@@ -47,14 +47,33 @@ class CPU:
         self._fast_rom_data = bus.cartridge.data
         self._fast_rom_data_len = len(bus.cartridge.data)
         self._fast_rom_is_mbc3 = bus.cartridge.type_spec.mapper is MapperKind.MBC3
-        self.a = 0x01 if post_boot else 0
-        self.f = 0xB0 if post_boot else 0
-        self.b = 0x00
-        self.c = 0x13 if post_boot else 0
-        self.d = 0x00
-        self.e = 0xD8 if post_boot else 0
-        self.h = 0x01 if post_boot else 0
-        self.l = 0x4D if post_boot else 0
+        if post_boot and bus.cgb_mode:
+            self.a = 0x11
+            self.f = 0x80
+            self.b = 0x00
+            self.c = 0x00
+            self.d = 0xFF
+            self.e = 0x56
+            self.h = 0x00
+            self.l = 0x0D
+        elif post_boot:
+            self.a = 0x01
+            self.f = 0xB0
+            self.b = 0x00
+            self.c = 0x13
+            self.d = 0x00
+            self.e = 0xD8
+            self.h = 0x01
+            self.l = 0x4D
+        else:
+            self.a = 0x00
+            self.f = 0x00
+            self.b = 0x00
+            self.c = 0x00
+            self.d = 0x00
+            self.e = 0x00
+            self.h = 0x00
+            self.l = 0x00
         self.sp = 0xFFFE if post_boot else 0
         self.pc = start_pc & 0xFFFF
         self.ime = False

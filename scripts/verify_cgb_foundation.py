@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -51,6 +52,22 @@ def run_smoke() -> dict[str, Any]:
     check(auto_emulator.mode == EmulationMode.CGB, failures, "auto mode did not select CGB")
     check(cgb_emulator.bus.cgb_mode, failures, "explicit CGB mode did not create a CGB bus")
 
+    default_cgb_only = Emulator(cgb_only, serial_sink=lambda _: None)
+    explicit_dmg_cgb_only = Emulator(cgb_only, serial_sink=lambda _: None, mode="dmg")
+    check(
+        default_cgb_only.mode == EmulationMode.CGB,
+        failures,
+        "CGB-only cartridge did not force CGB mode by default",
+    )
+    check(
+        explicit_dmg_cgb_only.mode == EmulationMode.CGB,
+        failures,
+        "CGB-only cartridge did not force CGB mode from requested DMG mode",
+    )
+    check(default_cgb_only.cpu.a == 0x11, failures, "CGB post-boot A register was not $11")
+    check(default_cgb_only.cpu.f == 0x80, failures, "CGB post-boot F register was not $80")
+    check(default_cgb_only.bus.read8(0xFF4D) == 0x7E, failures, "CGB KEY1 initial read was not $7E")
+
     dmg_bus = default_emulator.bus
     dmg_bus.write8(0xFF4F, 0x01)
     dmg_bus.write8(0xFF70, 0x02)
@@ -90,6 +107,8 @@ def run_smoke() -> dict[str, Any]:
     check(bus.perform_speed_switch(), failures, "KEY1 speed switch placeholder did not toggle")
     check(bus.double_speed, failures, "KEY1 double-speed placeholder bit did not latch")
 
+    crystal = run_local_crystal_smoke(failures)
+
     return {
         "status": "pass" if not failures else "fail",
         "failures": failures,
@@ -97,11 +116,74 @@ def run_smoke() -> dict[str, Any]:
             "header_cgb_supported": enhanced.header.cgb_supported,
             "header_cgb_only": cgb_only.header.cgb_only,
             "default_mode": default_emulator.mode.value,
+            "cgb_only_default_mode": default_cgb_only.mode.value,
             "auto_mode": auto_emulator.mode.value,
+            "cgb_post_boot_a": default_cgb_only.cpu.a,
+            "key1_initial": default_cgb_only.bus.read8(0xFF4D),
             "vram_banks": len(bus.vram) // 0x2000,
             "wram_banks": len(bus.wram) // 0x1000,
             "double_speed_placeholder": bus.double_speed,
         },
+        "crystal": crystal,
+    }
+
+
+def cli_mode_output(rom: Path, mode: str | None = None) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        "-B",
+        str(ROOT / "main.py"),
+        str(rom),
+        "--max-instructions",
+        "0",
+        "--frames",
+        "0",
+    ]
+    if mode is not None:
+        command.extend(["--mode", mode])
+    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    return {
+        "command": command,
+        "returncode": result.returncode,
+        "output": output,
+        "mode_cgb": "Mode: CGB" in output,
+        "mode_dmg": "Mode: DMG" in output,
+    }
+
+
+def run_local_crystal_smoke(failures: list[str]) -> dict[str, Any]:
+    rom = ROOT / "roms" / "crystal.gbc"
+    if not rom.exists():
+        return {"status": "skipped", "reason": f"{rom} not found"}
+
+    cartridge = Cartridge.from_file(rom)
+    emulator = Emulator(cartridge, serial_sink=lambda _: None)
+    auto_emulator = Emulator(cartridge, serial_sink=lambda _: None, mode="auto")
+    default_cli = cli_mode_output(rom)
+    auto_cli = cli_mode_output(rom, "auto")
+
+    check(cartridge.header.cgb_only, failures, "Pokemon Crystal header was not detected as CGB-only")
+    check(emulator.mode == EmulationMode.CGB, failures, "Pokemon Crystal default startup did not enter CGB mode")
+    check(auto_emulator.mode == EmulationMode.CGB, failures, "Pokemon Crystal auto startup did not enter CGB mode")
+    check(emulator.cpu.a == 0x11, failures, "Pokemon Crystal CGB startup did not expose A=$11")
+    check(default_cli["returncode"] == 0, failures, "Pokemon Crystal default CLI startup failed")
+    check(default_cli["mode_cgb"], failures, "Pokemon Crystal default CLI output did not show Mode: CGB")
+    check(auto_cli["returncode"] == 0, failures, "Pokemon Crystal --mode auto CLI startup failed")
+    check(auto_cli["mode_cgb"], failures, "Pokemon Crystal --mode auto CLI output did not show Mode: CGB")
+
+    return {
+        "status": "checked",
+        "path": str(rom),
+        "title": cartridge.header.title,
+        "cgb_flag": cartridge.header.cgb_flag,
+        "cgb_status": cartridge.header.cgb_status,
+        "default_mode": emulator.mode.value,
+        "auto_mode": auto_emulator.mode.value,
+        "cpu_a": emulator.cpu.a,
+        "key1_initial": emulator.bus.read8(0xFF4D),
+        "default_cli_mode_cgb": default_cli["mode_cgb"],
+        "auto_cli_mode_cgb": auto_cli["mode_cgb"],
     }
 
 

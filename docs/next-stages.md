@@ -6,11 +6,11 @@ This document is the active roadmap. Historical Stage 1 CPU evidence is preserve
 
 ## Current State
 
-GBemu is now a playable DMG-first emulator for the current primary real-ROM target, Pokemon Red, with Super Mario Land added as a quick early-action performance smoke target. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, rolling frame/audio profiling, and a minimal CGB foundation.
+GBemu is now a playable DMG-first emulator for the current primary real-ROM target, Pokemon Red, with Super Mario Land added as a quick early-action performance smoke target. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, rolling frame/audio profiling, and a minimal CGB foundation with forced CGB-only startup identity plus Crystal first-frame/window-startup smoke coverage.
 
 The project is not cycle-perfect and not yet a broad commercial compatibility emulator. The strongest next work is to keep adding evidence while improving accuracy and tail-latency behavior.
 
-Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, functional audio, and CGB foundation registers/banking are in place. The largest remaining gaps are full pixel FIFO completeness, stricter APU suite/analog accuracy, broader commercial compatibility, full CGB rendering/timing/DMA behavior, and real link/SGB/peripheral behavior.
+Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, functional audio, and CGB foundation startup/registers/banking/window ordering are in place. The largest remaining gaps are full pixel FIFO completeness, stricter APU suite/analog accuracy, broader commercial compatibility, full CGB rendering/timing/DMA behavior, and real link/SGB/peripheral behavior.
 
 ## Completed Milestones
 
@@ -57,6 +57,7 @@ Done:
 - CLI frame/instruction limits, stop conditions, static held buttons, frame/audio dumps, and trace output.
 - Joypad `FF00` matrix, selected-line interrupts, held-button non-retriggering, and STOP wake.
 - Tkinter window mode with keyboard input, pause/reset/trace/audio toggles, frame pacing, and live audio.
+- Tkinter startup now presents the host window before long first-frame emulation work, with optional `--profile-startup` diagnostics for CGB startup debugging.
 - Rolling window profiler with run/draw/audio timing, CPU/bus/PPU/APU stats, audio queue range, worst-frame spike fields, and coarse spike cause attribution.
 - Automated Pokemon Red headless performance gate for fixed text, sprite-heavy, and sprite-heavy-with-audio scenarios, including parsed metrics and deterministic frame/instruction/cycle drift checks.
 - Super Mario Land early-1-1 action performance gate with fixed headless metrics, headless audio sample-drop checks, and live `window-profile` capture validation.
@@ -114,11 +115,13 @@ Status: foundation started; not a compatibility mode yet.
 Done:
 
 - CGB-enhanced and CGB-only header detection.
-- Explicit emulator mode selection with default DMG behavior preserved and `--mode dmg|cgb|auto` available in the CLI.
+- Explicit emulator mode selection with default DMG behavior preserved for DMG/CGB-enhanced ROMs, forced CGB mode for CGB-only ROMs, and `--mode dmg|cgb|auto` available in the CLI.
+- Basic CGB post-boot CPU identity, including `A=$11`.
 - DMG-mode CGB-only IO remains inert.
 - CGB-mode foundations for `FF4F` VRAM bank select, `FF70` WRAM bank select, `FF68`-`FF6B` palette RAM/indexing, and KEY1 double-speed placeholder state.
 - Unit coverage for default DMG behavior and exposed CGB behavior.
-- `scripts\verify_cgb_foundation.py` synthetic smoke verifier.
+- `scripts\verify_cgb_foundation.py` synthetic smoke verifier, including a local Pokemon Crystal header/startup check when `roms\crystal.gbc` exists.
+- `scripts\verify_crystal_window_startup.py` headless/window smoke verifier, confirming Crystal reaches the first frame in CGB mode and Tk presents before first-frame emulation begins.
 
 Remaining:
 
@@ -126,7 +129,7 @@ Remaining:
 - CGB VRAM bank attributes/tile maps and CGB priority rules.
 - HDMA/GDMA.
 - Double-speed timing model.
-- CGB boot behavior and real CGB ROM compatibility gates.
+- Full CGB boot behavior and real CGB ROM compatibility gates.
 
 ## Active Regression Gates
 
@@ -137,6 +140,7 @@ Run these before treating a compatibility or timing change as safe:
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_ppu.py --strict --max-steps 3000000
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_apu.py --json-output qa-output\apu-dmg-sound.json
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_cgb_foundation.py --json-output qa-output\cgb-foundation.json
+.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_crystal_window_startup.py --json-output qa-output\crystal-window-startup-headless.json
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_pokemon_red.py
 python -B scripts\verify_oak_encyclopedia_oracle.py
 python -B scripts\verify_pokemon_red_sprite_scene_oracle.py
@@ -157,6 +161,12 @@ For performance-sensitive changes, profile Pokemon Red:
 python -B main.py .\roms\PRed.gb --window --audio --max-instructions 0 --frames 1800 --profile-window --profile-window-interval 60
 python -B scripts\verify_pokemon_red_performance.py --window-profile-log qa-output\pokemon-red-window-profile.log
 python -B scripts\verify_super_mario_land_performance.py --scenario action-audio --run-live-window --json-output qa-output\super-mario-land-live-performance-gate.json
+```
+
+For CGB window-startup/display-ordering changes, also run:
+
+```powershell
+python -B scripts\verify_crystal_window_startup.py --run-window --json-output qa-output\crystal-window-startup.json
 ```
 
 Current target thresholds:

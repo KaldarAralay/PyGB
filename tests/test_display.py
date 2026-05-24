@@ -30,6 +30,8 @@ class FakeRoot:
         self.title_text = ""
         self.scheduled_delays: list[int] = []
         self.idle_callbacks = 0
+        self.update_idletasks_calls = 0
+        self.update_calls = 0
 
     def after(self, delay_ms: int, callback) -> None:
         self.scheduled_delays.append(delay_ms)
@@ -39,6 +41,12 @@ class FakeRoot:
 
     def title(self, text: str) -> None:
         self.title_text = text
+
+    def update_idletasks(self) -> None:
+        self.update_idletasks_calls += 1
+
+    def update(self) -> None:
+        self.update_calls += 1
 
     def destroy(self) -> None:
         pass
@@ -313,6 +321,33 @@ class DisplayTests(unittest.TestCase):
 
         self.assertEqual(root.idle_callbacks, 1)
         self.assertEqual(root.scheduled_delays, [])
+
+    def test_tk_display_presents_initial_window_before_first_frame_step(self) -> None:
+        emulator = FakeEmulator()
+        emulator.bus.ppu.framebuffer = [[0, 1], [2, 3]]
+        display = TkDisplay(emulator, config=DisplayConfig(scale=1))
+        root = FakeRoot()
+        image = FakeImage()
+        display._root = root
+        display._image = image
+        display._label = object()
+
+        display._present_initial_window()
+
+        self.assertEqual(root.update_idletasks_calls, 1)
+        self.assertEqual(root.update_calls, 1)
+        self.assertEqual(emulator.run_calls, [])
+        self.assertEqual(len(image.copy_calls), 1)
+        self.assertEqual(
+            image.copy_calls[0],
+            (
+                image,
+                "put",
+                framebuffer_to_tk_ppm_data(emulator.bus.ppu.framebuffer),
+                "-format",
+                "PPM",
+            ),
+        )
 
     def test_tk_display_trace_command_toggles_run_tracing(self) -> None:
         emulator = FakeEmulator()

@@ -42,6 +42,39 @@ class MainLoopTests(unittest.TestCase):
         self.assertEqual(emulator.mode, EmulationMode.DMG)
         self.assertFalse(emulator.bus.cgb_mode)
 
+    def test_emulator_forces_cgb_mode_for_cgb_only_roms(self) -> None:
+        cartridge = Cartridge(make_rom(cgb_flag=0xC0))
+
+        default = Emulator(cartridge, serial_sink=lambda _: None)
+        explicit_dmg = Emulator(cartridge, serial_sink=lambda _: None, mode="dmg")
+        auto = Emulator(cartridge, serial_sink=lambda _: None, mode="auto")
+
+        self.assertEqual(default.mode, EmulationMode.CGB)
+        self.assertTrue(default.bus.cgb_mode)
+        self.assertEqual(explicit_dmg.mode, EmulationMode.CGB)
+        self.assertTrue(explicit_dmg.bus.cgb_mode)
+        self.assertEqual(auto.mode, EmulationMode.CGB)
+        self.assertTrue(auto.bus.cgb_mode)
+
+    def test_cgb_post_boot_identity_registers(self) -> None:
+        emulator = Emulator(
+            Cartridge(make_rom(cgb_flag=0xC0)),
+            serial_sink=lambda _: None,
+        )
+
+        self.assertEqual(emulator.cpu.a, 0x11)
+        self.assertEqual(emulator.cpu.f, 0x80)
+        self.assertEqual(emulator.cpu.bc, 0x0000)
+        self.assertEqual(emulator.cpu.de, 0xFF56)
+        self.assertEqual(emulator.cpu.hl, 0x000D)
+        self.assertEqual(emulator.cpu.sp, 0xFFFE)
+        self.assertEqual(emulator.cpu.pc, 0x0100)
+        self.assertEqual(emulator.bus.read8(0xFF4D), 0x7E)
+        self.assertFalse(emulator.bus.double_speed)
+        self.assertFalse(emulator.bus.speed_switch_armed)
+        self.assertEqual(emulator.bus.read8(0xFF4F), 0xFE)
+        self.assertEqual(emulator.bus.read8(0xFF70), 0xF8)
+
     def test_emulator_can_select_cgb_mode_explicitly_or_from_auto(self) -> None:
         cgb_cartridge = Cartridge(make_rom(cgb_flag=0x80))
         dmg_cartridge = Cartridge(make_rom())

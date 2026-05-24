@@ -72,6 +72,11 @@ def parse_args() -> argparse.Namespace:
         default=DisplayConfig.profile_interval,
         help="Window frame count per --profile-window timing report",
     )
+    parser.add_argument(
+        "--profile-startup",
+        action="store_true",
+        help="Print Tk/CGB first-frame startup diagnostics in --window mode.",
+    )
     parser.add_argument("--save-file", type=Path, help="Load cartridge RAM from this file and save it on exit")
     parser.add_argument(
         "--buttons",
@@ -103,7 +108,10 @@ def parse_args() -> argparse.Namespace:
         "--mode",
         choices=("dmg", "cgb", "auto"),
         default="dmg",
-        help="Hardware mode. Defaults to DMG; use cgb or auto for the CGB foundation path.",
+        help=(
+            "Hardware mode. Defaults to DMG, but CGB-only cartridges are forced "
+            "to CGB; use cgb or auto for the CGB foundation path."
+        ),
     )
     return parser.parse_args()
 
@@ -220,7 +228,9 @@ def main() -> int:
 
     print(emulator.cartridge.header.summary())
     print(f"Mode: {emulator.mode.value}")
-    if emulator.cartridge.header.cgb_only and emulator.mode != EmulationMode.CGB:
+    if args.mode == "dmg" and emulator.cartridge.header.cgb_only:
+        print("Note: CGB-only cartridge forced CGB mode.")
+    elif emulator.cartridge.header.cgb_only and emulator.mode != EmulationMode.CGB:
         print("Warning: cartridge is CGB-only but emulator mode is DMG.")
     print(emulator.cartridge.mapper_status)
     if not emulator.cartridge.is_supported_mapper:
@@ -247,6 +257,7 @@ def main() -> int:
                         fps=args.fps,
                         max_instructions_per_frame=args.frame_instruction_limit,
                         profile_window=args.profile_window,
+                        profile_startup=args.profile_startup,
                         profile_interval=args.profile_window_interval,
                         audio_enabled=args.audio,
                         audio_sample_rate=args.audio_sample_rate,

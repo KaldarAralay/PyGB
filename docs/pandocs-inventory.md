@@ -19,7 +19,7 @@ Primary Pan Docs references:
 
 ## Snapshot
 
-GBemu is currently a playable, DMG-first emulator with strong evidence for Pokemon Red, Super Mario Land action/performance smoke coverage, Dr. Mario smoke coverage, Blargg CPU coverage, selected PPU suite coverage, Blargg `dmg_sound` APU tracking, live display/audio, and guarded real-ROM performance gates. A minimal CGB foundation is now present for header detection, explicit mode selection, banking registers, palette RAM, and KEY1 placeholder state.
+GBemu is currently a playable, DMG-first emulator with strong evidence for Pokemon Red, Super Mario Land action/performance smoke coverage, Dr. Mario smoke coverage, Blargg CPU coverage, selected PPU suite coverage, Blargg `dmg_sound` APU tracking, live display/audio, and guarded real-ROM performance gates. A minimal CGB foundation is now present for header detection, explicit mode selection, forced CGB-only startup identity, banking registers, palette RAM, KEY1 placeholder state, and Crystal first-frame/window-startup smoke coverage.
 
 The biggest remaining gaps versus Pan Docs are not "can a ROM boot?" gaps anymore. They are hardware-completeness gaps: full pixel FIFO behavior, broader PPU timing ROM coverage, full APU suite compatibility and analog accuracy, full CGB rendering/timing/DMA behavior, SGB behavior, real serial peer/link behavior, and specialty cartridge hardware.
 
@@ -27,16 +27,17 @@ The biggest remaining gaps versus Pan Docs are not "can a ROM boot?" gaps anymor
 
 | Gate | Current result |
 | --- | --- |
-| Unit suite | `358 tests`, `OK` on 2026-05-23. |
+| Unit suite | `361 tests`, `OK` on 2026-05-23. |
 | CPU ROM gate | `scripts\verify_cpu.py` passes Blargg individual `cpu_instrs` ROMs and combined `cpu_instrs.gb`. |
 | APU ROM gate | `scripts\verify_apu.py` passes all 12 single Blargg `dmg_sound` ROMs, including CH3 wave-RAM edge cases. |
 | PPU strict gate | `scripts\verify_ppu.py --strict --max-steps 3000000` covers `dmg-acid2`, current Mooneye PPU tests, and selected Mealybug image cases. |
 | Pokemon Red smoke | `scripts\verify_pokemon_red.py` covers headless smoke, mapper probe, and save round-trip. |
 | Oak's Lab encyclopedia oracle | `scripts\verify_oak_encyclopedia_oracle.py`: crop `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F` match PyBoy. |
 | Sprite-heavy scene oracle | `scripts\verify_pokemon_red_sprite_scene_oracle.py`: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes. |
-| Automated Pokemon Red performance gate | `scripts\verify_pokemon_red_performance.py`: text `run_fps=90.93`; sprites `run_fps=74.36`; sprites with headless audio output `run_fps=64.82`, `apu_dropped_samples=0`; deterministic frame/instruction/cycle totals matched exactly. |
-| Super Mario Land action gate | `scripts\verify_super_mario_land_performance.py`: action `run_fps=79.21`; action with headless audio output `run_fps=67.50`, `apu_dropped_samples=0`; live action capture min `wall_fps=46.84`, min queue `33.5 ms`, and zero audio underruns/drops. |
-| CGB foundation smoke | `scripts\verify_cgb_foundation.py`: synthetic checks pass for CGB headers, default DMG behavior, explicit/auto CGB mode, VRAM/WRAM bank selects, palette RAM, and KEY1 placeholder state. |
+| Automated Pokemon Red performance gate | `scripts\verify_pokemon_red_performance.py`: text `run_fps=91.91`; sprites `run_fps=75.01`; sprites with headless audio output `run_fps=64.98`, `apu_dropped_samples=0`; deterministic frame/instruction/cycle totals matched exactly. |
+| Super Mario Land action gate | `scripts\verify_super_mario_land_performance.py`: action `run_fps=79.65`; action with headless audio output `run_fps=67.08`, `apu_dropped_samples=0`; live action capture min `wall_fps=46.84`, min queue `33.5 ms`, and zero audio underruns/drops. |
+| CGB foundation smoke | `scripts\verify_cgb_foundation.py`: synthetic checks pass for CGB headers, default DMG behavior, forced CGB-only startup, explicit/auto CGB mode, CGB post-boot `A=$11`, VRAM/WRAM bank selects, palette RAM, and KEY1 placeholder state. Local Pokemon Crystal smoke detects `PM_CRYSTAL` as CGB-only and confirms default/auto CLI `Mode: CGB`. |
+| Pokemon Crystal CGB startup/window smoke | `scripts\verify_crystal_window_startup.py`: headless Crystal reaches frame 1 in CGB mode; the window lane confirms Tk presents before first-frame emulation and reaches frame 1. |
 
 ## Pan Docs Coverage Table
 
@@ -53,11 +54,11 @@ The biggest remaining gaps versus Pan Docs are not "can a ROM boot?" gaps anymor
 | OAM DMA and OAM access | `bus.py` and `ppu.py` model FF46 DMA timing, bus blocking, HRAM exception, OAM access restrictions, sprite hiding during DMA, and selected mid-frame DMA effects. | Partial | More edge coverage for exact corruption behavior and hardware revision differences. |
 | Pixel FIFO | The renderer has a segmented/timing-aware model with many targeted mode-3 tests for scroll, window, palette, LCDC, OBJ, and fetch-boundary behavior. | Partial | It is not a complete Pan Docs FIFO implementation; candidate Mealybug cases remain diagnostic. |
 | APU/audio | `apu.py` and `audio.py` cover NR52 power, register reads/writes, DAC-gated channels, triggers, length, envelope, sweep, pulse/wave/noise timers, CH3 wave RAM behavior, CH4 LFSR, mixer, high-pass filter, sample buffering, WAV output, live waveOut playback, deterministic WAV identity, and a passing Blargg `dmg_sound` single-ROM lane. | Partial | Stricter APU suites, analog filtering accuracy, broader audio oracles, obscure trigger/sweep/envelope quirks, and latency tuning. |
-| Boot ROM and power-up | Optional user-supplied DMG boot ROM mapping and one-way FF50 unmapping exist; post-boot defaults are tested. | Partial | No bundled boot ROM, no exact power-up randomness/boot process modeling, no CGB boot flow. |
-| CGB registers and mode | `cartridge.py`, `bus.py`, `emulator.py`, and `main.py` detect CGB headers, expose `DMG`/`CGB`/`auto` mode selection, keep CGB-only IO inert in DMG mode, and implement the foundation for `FF4F`, `FF70`, `FF68`-`FF6B`, and KEY1 placeholder state. | Partial foundation | No CGB renderer/palette application, HDMA, double-speed timing model, CGB OAM priority, CGB boot behavior, or real CGB game compatibility yet. |
+| Boot ROM and power-up | Optional user-supplied DMG boot ROM mapping and one-way FF50 unmapping exist; DMG post-boot defaults are tested; CGB mode now has basic post-boot CPU identity including `A=$11`. | Partial | No bundled boot ROM, no exact power-up randomness/boot process modeling, no full CGB boot flow. |
+| CGB registers and mode | `cartridge.py`, `bus.py`, `emulator.py`, `main.py`, and `display.py` detect CGB headers, expose `DMG`/`CGB`/`auto` mode selection, force CGB-only cartridges into CGB mode, keep CGB-only IO inert in DMG mode, implement the foundation for `FF4F`, `FF70`, `FF68`-`FF6B`, and KEY1 placeholder state, and verify Crystal first-frame/window startup ordering. | Partial foundation | No CGB renderer/palette application, HDMA, double-speed timing model, CGB OAM priority, full CGB boot behavior, or real CGB game compatibility yet. |
 | SGB | No SGB mode. | Pending | SGB command packets, borders, palettes, multiplayer input, and SNES-side behavior are not implemented. |
 | External devices | Basic cartridge RTC support exists for MBC3. | Partial | Game Boy Printer, Camera-specific behavior, MBC7 sensor, HuC3 hardware, and real link accessories are pending. |
-| Runtime/frontends | `emulator.py`, `main.py`, and `display.py` provide frame stepping, save lifecycle, reset, CLI tooling, frame/audio dumps, Tkinter windowing, live audio, tracing, profiling, and button scripts. | Partial | Host-dependent pacing remains outside hardware emulation; add automated performance-gate parsing. |
+| Runtime/frontends | `emulator.py`, `main.py`, and `display.py` provide frame stepping, save lifecycle, reset, CLI tooling, frame/audio dumps, Tkinter windowing, live audio, tracing, profiling, startup diagnostics, and button scripts. | Partial | Host-dependent pacing remains outside hardware emulation; continue expanding saved profile and startup fixtures. |
 
 ## Risk Inventory
 
