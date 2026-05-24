@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 from bus import EmulationMode  # noqa: E402
 from cartridge import Cartridge, compute_header_checksum  # noqa: E402
 from emulator import Emulator  # noqa: E402
+from ppu import DOTS_PER_LINE, MODE2_DOTS, MODE3_DOTS, MODE_HBLANK  # noqa: E402
 
 
 def make_rom(*, title: bytes = b"CGBFOUND", cgb_flag: int = 0x80) -> bytes:
@@ -31,6 +32,13 @@ def make_rom(*, title: bytes = b"CGBFOUND", cgb_flag: int = 0x80) -> bytes:
 def check(condition: bool, failures: list[str], message: str) -> None:
     if not condition:
         failures.append(message)
+
+
+def tick_to_next_hblank(bus) -> None:
+    if bus.ppu.mode == MODE_HBLANK:
+        bus.ppu.tick(DOTS_PER_LINE - bus.ppu.line_dots + MODE2_DOTS + MODE3_DOTS)
+    else:
+        bus.ppu.tick(MODE2_DOTS + MODE3_DOTS)
 
 
 def run_smoke() -> dict[str, Any]:
@@ -108,10 +116,60 @@ def run_smoke() -> dict[str, Any]:
     bus.write8(0xFF6C, 0x00)
     check(bus.cgb_object_priority_mode == 0, failures, "OPRI CGB priority mode write failed")
 
-    bus.write8(0xFF4D, 0x01)
-    check(bus.speed_switch_armed, failures, "KEY1 prepare bit did not arm speed switch")
-    check(bus.perform_speed_switch(), failures, "KEY1 speed switch placeholder did not toggle")
-    check(bus.double_speed, failures, "KEY1 double-speed placeholder bit did not latch")
+    gdma_source = bytes(range(0x10))
+    bus.wram[0x0000:0x0010] = gdma_source
+    bus.write8(0xFF51, 0xC0)
+    bus.write8(0xFF52, 0x0F)
+    bus.write8(0xFF53, 0x91)
+    bus.write8(0xFF54, 0x2F)
+    bus.write8(0xFF55, 0x00)
+    check(
+        bytes(bus.vram[0x1120:0x1130]) == gdma_source,
+        failures,
+        "GDMA did not copy masked WRAM source bytes into VRAM",
+    )
+    check(bus.read8(0xFF55) == 0xFF, failures, "GDMA completion did not read back $FF")
+
+    hdma_emulator = Emulator(enhanced, serial_sink=lambda _: None, mode=EmulationMode.CGB)
+    hdma_bus = hdma_emulator.bus
+    hdma_source = bytes(0x40 + index for index in range(0x20))
+    hdma_bus.wram[0x0000:0x0020] = hdma_source
+    hdma_bus.vram[0x0000:0x0020] = bytes([0x00] * 0x20)
+    hdma_bus.write8(0xFF51, 0xC0)
+    hdma_bus.write8(0xFF52, 0x00)
+    hdma_bus.write8(0xFF53, 0x00)
+    hdma_bus.write8(0xFF54, 0x00)
+    hdma_bus.write8(0xFF55, 0x81)
+    tick_to_next_hblank(hdma_bus)
+    check(
+        bytes(hdma_bus.vram[0x0000:0x0010]) == hdma_source[:0x10],
+        failures,
+        "HDMA did not copy the first block during visible HBlank",
+    )
+    check(hdma_bus.read8(0xFF55) == 0x00, failures, "HDMA active length readback was wrong")
+    tick_to_next_hblank(hdma_bus)
+    check(bytes(hdma_bus.vram[0x0000:0x0020]) == hdma_source, failures, "HDMA did not finish on the second HBlank")
+    check(hdma_bus.read8(0xFF55) == 0xFF, failures, "HDMA completion did not read back $FF")
+
+    speed_bus = Emulator(enhanced, serial_sink=lambda _: None, mode=EmulationMode.CGB).bus
+    speed_bus.write8(0xFF4D, 0x01)
+    check(speed_bus.speed_switch_armed, failures, "KEY1 prepare bit did not arm speed switch")
+    check(speed_bus.read8(0xFF4D) == 0x7F, failures, "KEY1 armed readback was not $7F")
+    check(speed_bus.perform_speed_switch(), failures, "KEY1 STOP speed switch did not toggle")
+    check(speed_bus.double_speed, failures, "KEY1 double-speed bit did not latch")
+    check(speed_bus.read8(0xFF4D) == 0xFE, failures, "KEY1 double-speed readback was not $FE")
+    speed_bus.write8(0xFF04, 0x00)
+    speed_bus.write8(0xFF05, 0x00)
+    speed_bus.write8(0xFF07, 0x05)
+    apu_counter = speed_bus.apu._frame_sequence_counter
+    speed_bus.tick(16)
+    check(speed_bus.read8(0xFF05) == 0x01, failures, "TIMA did not tick on the CGB CPU-speed domain")
+    check(speed_bus.ppu.line_dots == 8, failures, "PPU did not run at half CPU cycles in double speed")
+    check(
+        speed_bus.apu._frame_sequence_counter == apu_counter + 8,
+        failures,
+        "APU did not run at normal-speed cycles in double speed",
+    )
 
     crystal = run_local_crystal_smoke(failures)
 
@@ -129,7 +187,12 @@ def run_smoke() -> dict[str, Any]:
             "vram_banks": len(bus.vram) // 0x2000,
             "wram_banks": len(bus.wram) // 0x1000,
             "opri_initial": cgb_emulator.bus.read8(0xFF6C),
-            "double_speed_placeholder": bus.double_speed,
+            "gdma_blocks": bus.vram_dma_gdma_blocks,
+            "hdma_blocks": hdma_bus.vram_dma_hdma_blocks,
+            "key1_armed_readback": 0x7F,
+            "double_speed": speed_bus.double_speed,
+            "speed_switch_arm_writes": speed_bus.speed_switch_arm_writes,
+            "speed_switches": speed_bus.speed_switches,
         },
         "crystal": crystal,
     }

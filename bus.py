@@ -31,6 +31,7 @@ CGB_ONLY_IO_OFFSETS = {
     *range(0x72, 0x78),
 }
 SERIAL_INTERNAL_TRANSFER_CYCLES = 4096
+VRAM_DMA_BLOCK_BYTES = 0x10
 PPU_SCROLL_REGISTER_OFFSETS = {0x42, 0x43}
 PPU_RASTER_REGISTER_OFFSETS = {0x47, 0x48, 0x49}
 PPU_WINDOW_X_REGISTER_OFFSET = 0x4B
@@ -103,11 +104,19 @@ class Bus:
         self.obj_palette_ram = bytearray(0x40)
         self._vram_bank = 0
         self._wram_bank_register = 0
+        self._vram_dma_source = 0
+        self._vram_dma_destination = 0x8000
+        self._vram_dma_blocks_remaining = 0
+        self._vram_dma_hblank_active = False
+        self.vram_dma_gdma_blocks = 0
+        self.vram_dma_hdma_blocks = 0
+        self.vram_dma_bytes = 0
         self.ie = 0
         self.serial_text = ""
         self.serial_sink = serial_sink or self._stdout_serial_sink
         self._serial_transfer_cycles = 0
         self._system_counter = 0
+        self._normal_speed_cycle_remainder = 0
         self._tima_reload_delay = 0
         self._oam_dma_requested = False
         self._oam_dma_active = False
@@ -115,6 +124,8 @@ class Bus:
         self._oam_dma_index = 0
         self._oam_dma_cycle_counter = 0
         self._stopped = False
+        self.speed_switch_arm_writes = 0
+        self.speed_switches = 0
         self.profile_enabled = False
         self._profile_slow_system_counter_cycles = 0
         self._profile_oam_dma_cycles = 0
@@ -138,6 +149,22 @@ class Bus:
         return (self.io[0x6C] & 0x01) if self.cgb_mode else 1
 
     @property
+    def vram_dma_active(self) -> bool:
+        return self._vram_dma_hblank_active
+
+    @property
+    def vram_dma_source(self) -> int:
+        return self._vram_dma_source & 0xFFFF
+
+    @property
+    def vram_dma_destination(self) -> int:
+        return self._vram_dma_destination & 0xFFFF
+
+    @property
+    def vram_dma_blocks_remaining(self) -> int:
+        return self._vram_dma_blocks_remaining
+
+    @property
     def vram_bank(self) -> int:
         return self._vram_bank if self.cgb_mode else 0
 
@@ -158,6 +185,17 @@ class Bus:
     @property
     def speed_switch_armed(self) -> bool:
         return bool(self.io[0x4D] & 0x01)
+
+    @property
+    def _double_speed_timing_active(self) -> bool:
+        return self.cgb_mode and self.double_speed
+
+    def cpu_cycles_for_device_cycles(self, device_cycles: int) -> int:
+        if device_cycles <= 0:
+            return 0
+        if not self._double_speed_timing_active:
+            return device_cycles
+        return max(1, device_cycles * 2 - self._normal_speed_cycle_remainder)
 
     def consume_profile(self) -> BusProfileStats:
         stats = BusProfileStats(
@@ -320,6 +358,8 @@ class Bus:
                 self.ppu.after_render_register_write(offset)
                 return
             elif address == 0xFF4D:
+                if self.cgb_mode and value & 0x01:
+                    self.speed_switch_arm_writes += 1
                 value = (self.io[offset] & 0x80) | (value & 0x01) | 0x7E
             elif address == 0xFF46:
                 self._request_oam_dma(value)
@@ -358,16 +398,16 @@ class Bus:
             return
         if self._oam_dma_requested and not defer_new_dma:
             self._begin_oam_dma()
-        self._tick_system_counter(cycles)
+        device_cycles = self._tick_system_counter(cycles)
         if self._serial_transfer_cycles:
             self._tick_serial(cycles)
         apu = self.apu
         if apu.output_enabled:
-            apu._pending_output_cycles += cycles
+            apu._pending_output_cycles += device_cycles
             if apu._pending_output_cycles >= apu._cycles_until_subsample:
                 apu._process_pending_output_cycles(flush=False)
         else:
-            apu._advance_core(cycles)
+            apu._advance_core(device_cycles)
         if self._oam_dma_requested:
             self._begin_oam_dma()
 
@@ -390,7 +430,10 @@ class Bus:
             cycles_until_timer_edge = period - (self._system_counter % period)
             cycles = min(cycles, cycles_until_timer_edge)
 
-        cycles = min(cycles, self.ppu.cycles_until_next_event())
+        cycles = min(
+            cycles,
+            self.cpu_cycles_for_device_cycles(self.ppu.cycles_until_next_event()),
+        )
         return max(1, cycles)
 
     def perform_speed_switch(self) -> bool:
@@ -399,6 +442,7 @@ class Bus:
             return False
         self.reset_system_counter()
         self.io[0x4D] = ((key1 ^ 0x80) & 0x80) | 0x7E
+        self.speed_switches += 1
         return True
 
     def enter_stop(self) -> None:
@@ -410,6 +454,7 @@ class Bus:
 
     def reset_system_counter(self) -> None:
         self._system_counter = 0
+        self._normal_speed_cycle_remainder = 0
         self.io[0x04] = 0
 
     def stop_wake_requested(self) -> bool:
@@ -445,21 +490,22 @@ class Bus:
         self.io[0x02] = self.io[0x02] & ~0x80
         self.interrupt_flags = self.interrupt_flags | 0x08
 
-    def _tick_system_counter(self, cycles: int) -> None:
+    def _tick_system_counter(self, cycles: int) -> int:
         io = self.io
         if (
             not self._tima_reload_delay
             and not self._oam_dma_active
             and not self._oam_dma_requested
         ):
+            device_cycles = self._consume_normal_speed_cycles(cycles)
             tac = io[0x07]
             system_counter = self._system_counter
             if not tac & 0x04:
                 system_counter = (system_counter + cycles) & 0xFFFF
                 self._system_counter = system_counter
                 io[0x04] = (system_counter >> 8) & 0xFF
-                self.ppu.tick(cycles)
-                return
+                self.ppu.tick(device_cycles)
+                return device_cycles
 
             bit = (9, 3, 5, 7)[tac & 0x03]
             period = 1 << (bit + 1)
@@ -471,11 +517,12 @@ class Bus:
                 io[0x04] = (system_counter >> 8) & 0xFF
                 if edge_count:
                     io[0x05] = (tima + edge_count) & 0xFF
-                self.ppu.tick(cycles)
-                return
+                self.ppu.tick(device_cycles)
+                return device_cycles
 
         if self.profile_enabled:
             self._profile_slow_system_counter_cycles += cycles
+        device_cycles = 0
         for _ in range(cycles):
             self._tick_tima_reload_delay()
             old_signal = self._timer_signal()
@@ -489,9 +536,22 @@ class Bus:
             if oam_dma_active_at_cycle_start:
                 self.ppu.on_oam_dma_active_cycle()
             self._tick_oam_dma()
-            self.ppu.tick(1)
-            if oam_dma_active_at_cycle_start:
-                self.ppu.on_oam_dma_active_cycle()
+            if self._consume_normal_speed_cycles(1):
+                device_cycles += 1
+                self.ppu.tick(1)
+                if oam_dma_active_at_cycle_start:
+                    self.ppu.on_oam_dma_active_cycle()
+        return device_cycles
+
+    def _consume_normal_speed_cycles(self, cycles: int) -> int:
+        if cycles <= 0:
+            return 0
+        if not self._double_speed_timing_active:
+            self._normal_speed_cycle_remainder = 0
+            return cycles
+        total = self._normal_speed_cycle_remainder + cycles
+        self._normal_speed_cycle_remainder = total & 0x01
+        return total >> 1
 
     def _write_div(self) -> None:
         old_signal = self._timer_signal()
@@ -586,6 +646,10 @@ class Bus:
     def _read_cgb_io(self, offset: int) -> int:
         if offset == 0x4F:
             return 0xFE | self._vram_bank
+        if 0x51 <= offset <= 0x54:
+            return 0xFF
+        if offset == 0x55:
+            return self._read_vram_dma_status()
         if offset == 0x68:
             return self.io[0x68] & 0xBF
         if offset == 0x69:
@@ -603,6 +667,9 @@ class Bus:
     def _write_cgb_io(self, offset: int, value: int) -> bool:
         if offset == 0x4F:
             self._vram_bank = value & 0x01
+            return True
+        if 0x51 <= offset <= 0x55:
+            self._write_vram_dma_register(offset, value)
             return True
         if offset == 0x68:
             self.io[0x68] = value & 0xBF
@@ -634,6 +701,88 @@ class Bus:
         palette_ram[index] = value
         if self.io[index_offset] & 0x80:
             self.io[index_offset] = (self.io[index_offset] & 0x80) | ((index + 1) & 0x3F)
+
+    def on_hblank_start(self, ly: int) -> None:
+        if not self._vram_dma_hblank_active or ly >= VISIBLE_LINES:
+            return
+        self._copy_vram_dma_block(hblank=True)
+
+    def _write_vram_dma_register(self, offset: int, value: int) -> None:
+        if offset == 0x51:
+            self.io[0x51] = value
+            return
+        if offset == 0x52:
+            self.io[0x52] = value & 0xF0
+            return
+        if offset == 0x53:
+            self.io[0x53] = value & 0x1F
+            return
+        if offset == 0x54:
+            self.io[0x54] = value & 0xF0
+            return
+        if offset == 0x55:
+            self._write_vram_dma_control(value)
+
+    def _write_vram_dma_control(self, value: int) -> None:
+        if self._vram_dma_hblank_active:
+            if not value & 0x80:
+                self._vram_dma_hblank_active = False
+            return
+
+        self._vram_dma_source = ((self.io[0x51] << 8) | self.io[0x52]) & 0xFFF0
+        self._vram_dma_destination = (
+            0x8000 | ((self.io[0x53] & 0x1F) << 8) | (self.io[0x54] & 0xF0)
+        )
+        self._vram_dma_blocks_remaining = (value & 0x7F) + 1
+
+        if value & 0x80:
+            self._vram_dma_hblank_active = True
+            return
+
+        while self._vram_dma_blocks_remaining:
+            self._copy_vram_dma_block(hblank=False)
+        self._vram_dma_hblank_active = False
+
+    def _read_vram_dma_status(self) -> int:
+        if self._vram_dma_blocks_remaining <= 0:
+            return 0xFF
+        remaining = (self._vram_dma_blocks_remaining - 1) & 0x7F
+        if self._vram_dma_hblank_active:
+            return remaining
+        return 0x80 | remaining
+
+    def _copy_vram_dma_block(self, *, hblank: bool) -> None:
+        if self._vram_dma_blocks_remaining <= 0:
+            self._vram_dma_hblank_active = False
+            return
+        if self._vram_dma_destination >= 0xA000:
+            self._finish_vram_dma()
+            return
+
+        bytes_to_copy = min(VRAM_DMA_BLOCK_BYTES, 0xA000 - self._vram_dma_destination)
+        vram_base = self.vram_bank * 0x2000
+        for index in range(bytes_to_copy):
+            source = (self._vram_dma_source + index) & 0xFFFF
+            destination = self._vram_dma_destination + index
+            self.vram[vram_base + ((destination - 0x8000) & 0x1FFF)] = (
+                self._read8_unblocked(source)
+            )
+
+        self._vram_dma_source = (self._vram_dma_source + VRAM_DMA_BLOCK_BYTES) & 0xFFFF
+        self._vram_dma_destination += VRAM_DMA_BLOCK_BYTES
+        self._vram_dma_blocks_remaining -= 1
+        if hblank:
+            self.vram_dma_hdma_blocks += 1
+        else:
+            self.vram_dma_gdma_blocks += 1
+        self.vram_dma_bytes += bytes_to_copy
+
+        if self._vram_dma_blocks_remaining <= 0 or self._vram_dma_destination >= 0xA000:
+            self._finish_vram_dma()
+
+    def _finish_vram_dma(self) -> None:
+        self._vram_dma_blocks_remaining = 0
+        self._vram_dma_hblank_active = False
 
     def _vram_read_accessible(self) -> bool:
         if not self.ppu.lcd_enabled:
@@ -717,6 +866,11 @@ class Bus:
             cgb_defaults = {
                 0x02: 0x7F,
                 0x4D: 0x7E,
+                0x51: 0xFF,
+                0x52: 0xF0,
+                0x53: 0x1F,
+                0x54: 0xF0,
+                0x55: 0xFF,
             }
             for offset, value in cgb_defaults.items():
                 self.io[offset] = value

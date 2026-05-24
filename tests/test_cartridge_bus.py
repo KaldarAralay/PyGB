@@ -10,6 +10,7 @@ from bus import (
     SERIAL_INTERNAL_TRANSFER_CYCLES,
 )
 from cartridge import Cartridge, NINTENDO_LOGO, compute_header_checksum
+from ppu import DOTS_PER_LINE, MODE2_DOTS, MODE3_DOTS, MODE_HBLANK
 
 
 def make_rom(program: bytes = b"", title: bytes = b"TEST", cgb_flag: int = 0x00) -> bytes:
@@ -22,6 +23,21 @@ def make_rom(program: bytes = b"", title: bytes = b"TEST", cgb_flag: int = 0x00)
     rom[0x0149] = 0x00
     rom[0x014D] = compute_header_checksum(rom)
     return bytes(rom)
+
+
+def make_cgb_bus() -> Bus:
+    return Bus(
+        Cartridge(make_rom(cgb_flag=0x80)),
+        serial_sink=lambda _: None,
+        mode=EmulationMode.CGB,
+    )
+
+
+def tick_to_next_hblank(bus: Bus) -> None:
+    if bus.ppu.mode == MODE_HBLANK:
+        bus.ppu.tick(DOTS_PER_LINE - bus.ppu.line_dots + MODE2_DOTS + MODE3_DOTS)
+    else:
+        bus.ppu.tick(MODE2_DOTS + MODE3_DOTS)
 
 
 def make_mbc1_rom(rom_size: int = 0x10000, ram_size_code: int = 0x00, cart_type: int = 0x01) -> bytes:
@@ -400,6 +416,97 @@ class CartridgeBusTests(unittest.TestCase):
         self.assertEqual(bus.cgb_object_priority_mode, 0)
         self.assertEqual(bus.read8(0xFF6C), 0xFE)
 
+    def test_cgb_gdma_copies_immediately_with_masked_addresses(self) -> None:
+        bus = make_cgb_bus()
+        bus.write8(0xFF40, bus.read8(0xFF40) & ~0x80)
+        source = bytes(range(0x10))
+        bus.wram[0x0000:0x0010] = source
+
+        bus.write8(0xFF51, 0xC0)
+        bus.write8(0xFF52, 0x0F)
+        bus.write8(0xFF53, 0x91)
+        bus.write8(0xFF54, 0x2F)
+        bus.write8(0xFF55, 0x00)
+
+        destination = 0x1120
+        self.assertEqual(bytes(bus.vram[destination : destination + 0x10]), source)
+        self.assertEqual(bus.read8(0xFF55), 0xFF)
+        self.assertEqual(bus.vram_dma_gdma_blocks, 1)
+        self.assertEqual(bus.vram_dma_bytes, 0x10)
+        for address in (0xFF51, 0xFF52, 0xFF53, 0xFF54):
+            with self.subTest(address=address):
+                self.assertEqual(bus.read8(address), 0xFF)
+
+    def test_cgb_gdma_respects_current_vram_bank(self) -> None:
+        bus = make_cgb_bus()
+        bus.write8(0xFF40, bus.read8(0xFF40) & ~0x80)
+        source = bytes(0x80 + index for index in range(0x10))
+        bus.wram[0x0000:0x0010] = source
+        bus.vram[0x0000:0x0010] = bytes([0xEE] * 0x10)
+
+        bus.write8(0xFF4F, 0x01)
+        bus.write8(0xFF51, 0xC0)
+        bus.write8(0xFF52, 0x00)
+        bus.write8(0xFF53, 0x00)
+        bus.write8(0xFF54, 0x00)
+        bus.write8(0xFF55, 0x00)
+
+        self.assertEqual(bytes(bus.vram[0x0000:0x0010]), bytes([0xEE] * 0x10))
+        self.assertEqual(bytes(bus.vram[0x2000:0x2010]), source)
+
+    def test_cgb_hdma_copies_one_block_per_visible_hblank(self) -> None:
+        bus = make_cgb_bus()
+        source = bytes(0x20 + index for index in range(0x20))
+        bus.wram[0x0000:0x0020] = source
+        bus.vram[0x0000:0x0020] = bytes([0x00] * 0x20)
+
+        bus.write8(0xFF51, 0xC0)
+        bus.write8(0xFF52, 0x00)
+        bus.write8(0xFF53, 0x00)
+        bus.write8(0xFF54, 0x00)
+        bus.write8(0xFF55, 0x81)
+
+        self.assertTrue(bus.vram_dma_active)
+        self.assertEqual(bus.read8(0xFF55), 0x01)
+        self.assertEqual(bytes(bus.vram[0x0000:0x0020]), bytes([0x00] * 0x20))
+
+        tick_to_next_hblank(bus)
+
+        self.assertTrue(bus.vram_dma_active)
+        self.assertEqual(bus.read8(0xFF55), 0x00)
+        self.assertEqual(bytes(bus.vram[0x0000:0x0010]), source[:0x10])
+        self.assertEqual(bytes(bus.vram[0x0010:0x0020]), bytes([0x00] * 0x10))
+
+        tick_to_next_hblank(bus)
+
+        self.assertFalse(bus.vram_dma_active)
+        self.assertEqual(bus.read8(0xFF55), 0xFF)
+        self.assertEqual(bytes(bus.vram[0x0000:0x0020]), source)
+        self.assertEqual(bus.vram_dma_hdma_blocks, 2)
+
+    def test_cgb_hdma_abort_preserves_remaining_length_status(self) -> None:
+        bus = make_cgb_bus()
+        source = bytes(0x40 + index for index in range(0x30))
+        bus.wram[0x0000:0x0030] = source
+        bus.vram[0x0000:0x0030] = bytes([0x00] * 0x30)
+
+        bus.write8(0xFF51, 0xC0)
+        bus.write8(0xFF52, 0x00)
+        bus.write8(0xFF53, 0x00)
+        bus.write8(0xFF54, 0x00)
+        bus.write8(0xFF55, 0x82)
+        tick_to_next_hblank(bus)
+
+        bus.write8(0xFF55, 0x00)
+
+        self.assertFalse(bus.vram_dma_active)
+        self.assertEqual(bus.read8(0xFF55), 0x81)
+        self.assertEqual(bus.vram_dma_blocks_remaining, 2)
+        tick_to_next_hblank(bus)
+        self.assertEqual(bytes(bus.vram[0x0000:0x0010]), source[:0x10])
+        self.assertEqual(bytes(bus.vram[0x0010:0x0030]), bytes([0x00] * 0x20))
+        self.assertEqual(bus.vram_dma_hdma_blocks, 1)
+
     def test_cgb_mode_exposes_palette_registers(self) -> None:
         bus = Bus(
             Cartridge(make_rom(cgb_flag=0x80)),
@@ -422,22 +529,128 @@ class CartridgeBusTests(unittest.TestCase):
         bus.write8(0xFF68, 0xFF)
         self.assertEqual(bus.read8(0xFF68), 0xBF)
 
-    def test_key1_exposes_double_speed_placeholder_state(self) -> None:
-        bus = Bus(
-            Cartridge(make_rom(cgb_flag=0x80)),
-            serial_sink=lambda _: None,
-            mode=EmulationMode.CGB,
-        )
+    def test_key1_arms_and_reports_cgb_speed_state(self) -> None:
+        bus = make_cgb_bus()
 
+        self.assertEqual(bus.read8(0xFF4D), 0x7E)
         self.assertFalse(bus.double_speed)
         self.assertFalse(bus.speed_switch_armed)
+
+        bus.write8(0xFF4D, 0x00)
+        self.assertEqual(bus.read8(0xFF4D), 0x7E)
+
         bus.write8(0xFF4D, 0x01)
         self.assertTrue(bus.speed_switch_armed)
+        self.assertEqual(bus.speed_switch_arm_writes, 1)
+        self.assertEqual(bus.read8(0xFF4D), 0x7F)
 
         self.assertTrue(bus.perform_speed_switch())
         self.assertTrue(bus.double_speed)
         self.assertFalse(bus.speed_switch_armed)
-        self.assertEqual(bus.read8(0xFF4D) & 0x81, 0x80)
+        self.assertEqual(bus.speed_switches, 1)
+        self.assertEqual(bus.read8(0xFF4D), 0xFE)
+
+        bus.write8(0xFF4D, 0x01)
+        self.assertTrue(bus.perform_speed_switch())
+        self.assertFalse(bus.double_speed)
+        self.assertEqual(bus.speed_switches, 2)
+        self.assertEqual(bus.read8(0xFF4D), 0x7E)
+
+    def test_dmg_key1_speed_switch_preserves_legacy_timing_domain(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+
+        bus.write8(0xFF4D, 0x01)
+        self.assertTrue(bus.perform_speed_switch())
+        self.assertTrue(bus.double_speed)
+
+        bus.tick(16)
+
+        self.assertEqual(bus.ppu.line_dots, 16)
+
+    def test_cgb_double_speed_keeps_timers_serial_ppu_and_apu_domains_sane(self) -> None:
+        out: list[str] = []
+        bus = Bus(
+            Cartridge(make_rom(cgb_flag=0x80)),
+            serial_sink=out.append,
+            mode=EmulationMode.CGB,
+        )
+        bus.write8(0xFF4D, 0x01)
+        self.assertTrue(bus.perform_speed_switch())
+
+        bus.write8(0xFF04, 0x00)
+        bus.write8(0xFF05, 0x00)
+        bus.write8(0xFF07, 0x05)
+        apu_counter = bus.apu._frame_sequence_counter
+
+        bus.tick(16)
+
+        self.assertEqual(bus.read8(0xFF05), 0x01)
+        self.assertEqual(bus.ppu.line_dots, 8)
+        self.assertEqual(bus.apu._frame_sequence_counter, apu_counter + 8)
+
+        bus.write8(0xFF01, ord("Z"))
+        bus.write8(0xFF02, 0x81)
+        bus.tick(SERIAL_INTERNAL_TRANSFER_CYCLES - 1)
+        self.assertEqual(out, [])
+        bus.tick(1)
+        self.assertEqual(out, ["Z"])
+
+    def test_cgb_double_speed_ppu_frame_progress_takes_twice_the_cpu_cycles(self) -> None:
+        bus = make_cgb_bus()
+        bus.write8(0xFF4D, 0x01)
+        self.assertTrue(bus.perform_speed_switch())
+
+        bus.tick(DOTS_PER_LINE * 2 - 1)
+        self.assertEqual(bus.ppu._scanline, 0)
+        self.assertEqual(bus.ppu.line_dots, DOTS_PER_LINE - 1)
+
+        bus.tick(1)
+
+        self.assertEqual(bus.ppu._scanline, 1)
+        self.assertEqual(bus.ppu.line_dots, 0)
+
+    def test_cgb_double_speed_oam_dma_uses_cpu_cycle_domain(self) -> None:
+        bus = make_cgb_bus()
+        bus.write8(0xFF4D, 0x01)
+        self.assertTrue(bus.perform_speed_switch())
+        for index in range(0xA0):
+            bus.wram[index] = index
+
+        bus.write8(0xFF46, 0xC0)
+        bus.tick(639)
+        self.assertTrue(bus.oam_dma_active)
+        bus.tick(1)
+
+        self.assertFalse(bus.oam_dma_active)
+        self.assertEqual(bus.oam[0], 0x00)
+        self.assertEqual(bus.oam[0x9F], 0x9F)
+        self.assertEqual(bus.ppu.line_dots, 320)
+
+    def test_cgb_double_speed_hdma_still_runs_on_ppu_hblank_domain(self) -> None:
+        bus = make_cgb_bus()
+        bus.write8(0xFF4D, 0x01)
+        self.assertTrue(bus.perform_speed_switch())
+        for index in range(0x20):
+            bus.wram[index] = 0x80 | index
+        bus.write8(0xFF51, 0xC0)
+        bus.write8(0xFF52, 0x00)
+        bus.write8(0xFF53, 0x00)
+        bus.write8(0xFF54, 0x00)
+        bus.write8(0xFF55, 0x81)
+
+        bus.tick((MODE2_DOTS + MODE3_DOTS) * 2 - 1)
+        self.assertEqual(bus.vram_dma_hdma_blocks, 0)
+        bus.tick(1)
+        self.assertEqual(bus.vram_dma_hdma_blocks, 1)
+        self.assertEqual(bus.vram[0], 0x80)
+        self.assertTrue(bus.vram_dma_active)
+
+        ppu_cycles_to_next_hblank = DOTS_PER_LINE - bus.ppu.line_dots + MODE2_DOTS + MODE3_DOTS
+        bus.tick(ppu_cycles_to_next_hblank * 2)
+
+        self.assertEqual(bus.vram_dma_hdma_blocks, 2)
+        self.assertEqual(bus.vram[0x10], 0x90)
+        self.assertFalse(bus.vram_dma_active)
 
     def test_serial_transfer_hook(self) -> None:
         out: list[str] = []

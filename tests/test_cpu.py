@@ -3,15 +3,16 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from bus import Bus, SERIAL_INTERNAL_TRANSFER_CYCLES
+from bus import Bus, EmulationMode, SERIAL_INTERNAL_TRANSFER_CYCLES
 from cartridge import Cartridge, compute_header_checksum
 from cpu import CPU, FLAG_C, FLAG_H, FLAG_N, FLAG_Z
 
 
-def make_rom(program: bytes) -> bytes:
+def make_rom(program: bytes, *, cgb_flag: int = 0x00) -> bytes:
     rom = bytearray([0x00] * 0x8000)
     rom[0x0100 : 0x0100 + len(program)] = program
     rom[0x0134 : 0x0134 + len(b"CPUUNIT")] = b"CPUUNIT"
+    rom[0x0143] = cgb_flag
     rom[0x0147] = 0x00
     rom[0x0148] = 0x00
     rom[0x0149] = 0x00
@@ -21,6 +22,15 @@ def make_rom(program: bytes) -> bytes:
 
 def make_cpu(program: bytes) -> tuple[CPU, Bus]:
     bus = Bus(Cartridge(make_rom(program)), serial_sink=lambda _: None)
+    return CPU(bus), bus
+
+
+def make_cgb_cpu(program: bytes) -> tuple[CPU, Bus]:
+    bus = Bus(
+        Cartridge(make_rom(program, cgb_flag=0x80)),
+        serial_sink=lambda _: None,
+        mode=EmulationMode.CGB,
+    )
     return CPU(bus), bus
 
 
@@ -277,7 +287,26 @@ class CPUTests(unittest.TestCase):
         self.assertEqual(cpu.f & (FLAG_Z | FLAG_N | FLAG_H | FLAG_C), 0)
 
     def test_stop_resumes_for_key1_speed_switch_request(self) -> None:
-        cpu, bus = make_cpu(bytes([0x3E, 0x01, 0xE0, 0x4D, 0x10, 0x00, 0x3E, 0x42]))
+        cpu, bus = make_cgb_cpu(
+            bytes(
+                [
+                    0x3E,
+                    0x01,
+                    0xE0,
+                    0x4D,
+                    0x10,
+                    0x00,
+                    0x3E,
+                    0x01,
+                    0xE0,
+                    0x4D,
+                    0x10,
+                    0x00,
+                    0x3E,
+                    0x42,
+                ]
+            )
+        )
         bus.tick(300)
         self.assertNotEqual(bus.read8(0xFF04), 0x00)
 
@@ -289,7 +318,35 @@ class CPUTests(unittest.TestCase):
         self.assertEqual(bus.read8(0xFF4D) & 0x81, 0x80)
         self.assertEqual(bus.read8(0xFF04), 0x00)
         cpu.step()
+        cpu.step()
+        cpu.step()
+        self.assertFalse(cpu.stopped)
+        self.assertEqual(bus.read8(0xFF4D) & 0x81, 0x00)
+        cpu.step()
         self.assertEqual(cpu.a, 0x42)
+
+    def test_dmg_stop_with_key1_request_preserves_legacy_speed_switch_path(self) -> None:
+        cpu, bus = make_cpu(bytes([0x3E, 0x01, 0xE0, 0x4D, 0x10, 0x00, 0x3E, 0x42]))
+
+        cpu.step()
+        cpu.step()
+        cpu.step()
+
+        self.assertFalse(cpu.stopped)
+        self.assertTrue(bus.double_speed)
+        self.assertEqual(cpu.pc, 0x0106)
+        cpu.step()
+        self.assertEqual(cpu.a, 0x42)
+
+    def test_cgb_double_speed_cpu_instructions_advance_devices_at_half_rate(self) -> None:
+        cpu, bus = make_cgb_cpu(bytes([0x00, 0x00, 0x00, 0x00]))
+        bus.write8(0xFF4D, 0x01)
+        self.assertTrue(bus.perform_speed_switch())
+
+        cpu.run(max_instructions=4)
+
+        self.assertEqual(cpu.cycles, 16)
+        self.assertEqual(bus.ppu.line_dots, 8)
 
     def test_stop_waits_until_enabled_interrupt_is_pending(self) -> None:
         cpu, bus = make_cpu(bytes([0x10, 0x00, 0x3E, 0x42]))

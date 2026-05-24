@@ -1,6 +1,6 @@
 # GBemu
 
-GBemu is a DMG-first Game Boy emulator written in Python. It now runs real commercial DMG ROMs well enough for interactive testing: Pokemon Red is the primary gameplay regression target, Super Mario Land is an early-action performance smoke target, Dr. Mario is a visual smoke target, and the CPU/PPU/APU subsystems have automated regression gates. A minimal CGB foundation exists for headers, explicit mode selection, CGB-only startup identity, banking, palette registers, first-pass CGB BG/tile-attribute rendering, first-pass CGB OBJ palette/priority rendering, and Crystal startup/render smoke coverage, but CGB game compatibility is not claimed yet.
+GBemu is a DMG-first Game Boy emulator written in Python. It now runs real commercial DMG ROMs well enough for interactive testing: Pokemon Red is the primary gameplay regression target, Super Mario Land is an early-action performance smoke target, Dr. Mario is a visual smoke target, and the CPU/PPU/APU subsystems have automated regression gates. A minimal CGB foundation exists for headers, explicit mode selection, CGB-only startup identity, banking, palette registers, KEY1 double-speed switching, CGB VRAM DMA, first-pass CGB BG/tile-attribute rendering, first-pass CGB OBJ palette/priority rendering, and Crystal startup/render smoke coverage, but CGB game compatibility is not claimed yet.
 
 Current verified status: May 23, 2026.
 
@@ -8,9 +8,9 @@ Current verified status: May 23, 2026.
 
 - `.gb` ROM loading with cartridge header reporting, optional user-supplied DMG boot ROM mapping, and one-way `FF50` boot ROM unmapping.
 - Header-driven cartridge mapper dispatch for ROM-only, ROM+RAM, MBC1, MBC1M, MBC2, MBC3 with RTC sidecar state, MBC5 including rumble-control behavior, and HuC1 basic banking/IR state. Unsupported cartridge profiles are recognized and warned about.
-- CGB header detection for CGB-enhanced and CGB-only ROMs, explicit `--mode dmg|cgb|auto`, forced CGB mode for CGB-only cartridges, CGB post-boot CPU identity basics, Crystal first-frame/window-startup smoke coverage, and a guarded CGB foundation for `FF4F` VRAM banking, `FF70` WRAM banking, `FF68`-`FF6C` palette/OPRI registers, KEY1 double-speed placeholder state, first-pass CGB BG/window rendering with palette attributes, tile VRAM-bank attributes, X/Y flips, and first-pass CGB OBJ rendering with OBJ palette attributes, tile VRAM-bank selection, OAM/OPRI object ordering, BG priority attributes, LCDC.0 priority behavior, and RGB framebuffer output.
+- CGB header detection for CGB-enhanced and CGB-only ROMs, explicit `--mode dmg|cgb|auto`, forced CGB mode for CGB-only cartridges, CGB post-boot CPU identity basics, Crystal first-frame/window-startup smoke coverage, and a guarded CGB foundation for `FF4F` VRAM banking, `FF70` WRAM banking, `FF51`-`FF55` GDMA/HDMA VRAM DMA, `FF68`-`FF6C` palette/OPRI registers, KEY1 `FF4D` STOP-triggered double-speed switching, first-pass CGB BG/window rendering with palette attributes, tile VRAM-bank attributes, X/Y flips, and first-pass CGB OBJ rendering with OBJ palette attributes, tile VRAM-bank selection, OAM/OPRI object ordering, BG priority attributes, LCDC.0 priority behavior, and RGB framebuffer output.
 - SM83/LR35902 CPU core covering documented non-CB and CB-prefixed opcodes, stack/control flow, interrupts, HALT bug behavior, STOP wake/freeze behavior, and Blargg `cpu_instrs` verification.
-- Cycle-aware bus timing for DIV/TIMA edge ticking, delayed TIMA reloads, serial transfer timing, OAM DMA, PPU access restrictions, hardware-style I/O read masks, and inert CGB-only registers on DMG.
+- Cycle-aware bus timing for DIV/TIMA edge ticking, delayed TIMA reloads, serial transfer timing, OAM DMA, CGB double-speed CPU/device timing split, PPU access restrictions, hardware-style I/O read masks, and inert CGB-only registers on DMG.
 - PPU timing and rendering for DMG background/window/sprite output, LCD modes, `LY`/`STAT`, line-153 behavior, DMG STAT write quirk, mode-3 penalties, selected mid-scanline register effects, OAM DMA sprite hiding, frame dumps, and the strict selected external PPU gate.
 - Joypad input through `FF00`, CLI held buttons, STOP wake through selected joypad lines, and Tkinter keyboard controls.
 - APU register/channel model with pulse, wave, noise, length, envelope, sweep, DAC gating, mixer, initial high-pass filtering, sample buffering, WAV dumps, live Windows audio playback, deterministic WAV identity checks, and Blargg `dmg_sound` regression coverage.
@@ -167,7 +167,7 @@ Run the full unit suite:
 Latest full suite result:
 
 ```text
-Ran 374 tests in 0.539s
+Ran 385 tests in 0.572s
 OK
 ```
 
@@ -203,7 +203,7 @@ Run the synthetic CGB foundation smoke verifier:
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_cgb_foundation.py --json-output qa-output\cgb-foundation.json
 ```
 
-This verifies the new CGB mode/register foundation and, when `roms\crystal.gbc` exists locally, checks that Pokemon Crystal is detected as CGB-only and starts with `Mode: CGB` plus CGB post-boot CPU identity. It is not a CGB game compatibility claim.
+This verifies the new CGB mode/register foundation, including synthetic GDMA/HDMA data movement and KEY1 double-speed timing-domain checks, and when `roms\crystal.gbc` exists locally checks that Pokemon Crystal is detected as CGB-only and starts with `Mode: CGB` plus CGB post-boot CPU identity. It is not a CGB game compatibility claim.
 
 Run the Pokemon Crystal CGB startup/window smoke verifier:
 
@@ -221,7 +221,7 @@ Run the Pokemon Crystal CGB render smoke verifier:
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_crystal_cgb_render.py --frames 2400 --require-crystal-attributes --json-output qa-output\crystal-cgb-render-attrs.json
 ```
 
-The quick lane verifies Crystal reaches a visible RGB CGB frame using BG palette RAM. The longer lane verifies later Crystal frames populate palette, tile-bank, and flip attributes; the script also includes synthetic CGB BG palette/bank/flip checks plus CGB OBJ palette, OBJ tile-bank, OAM ordering, OPRI ordering, BG priority, and LCDC.0 priority checks.
+The quick lane verifies Crystal reaches a visible RGB CGB frame using BG palette RAM, fails if Crystal does not exercise CGB VRAM DMA, and reports whether startup armed or toggled KEY1 double speed. The longer lane verifies later Crystal frames populate palette, tile-bank, and flip attributes; the script also includes synthetic CGB BG palette/bank/flip checks plus CGB OBJ palette, OBJ tile-bank, OAM ordering, OPRI ordering, BG priority, and LCDC.0 priority checks.
 
 Run the Pokemon Red PyBoy visual/OAM oracles:
 
@@ -261,7 +261,7 @@ Latest sprite-scene oracle and performance-gate evidence:
 - Blargg `dmg_sound`: all 12 single ROMs pass in the default lane, including the CH3 wave-RAM edge cases.
 - Performance gate: text `run_fps=88.21`; sprites `run_fps=72.89`; sprites with headless audio output `run_fps=63.13`, `apu_dropped_samples=0`.
 - Super Mario Land action gate: headless action `run_fps=77.86`; action with headless audio output `run_fps=66.61`, `apu_dropped_samples=0`. Latest live action capture checked 10 non-startup profile windows with min `wall_fps=46.84`, min queue `33.5 ms`, and zero audio underruns/drops.
-- CGB foundation/render smoke: synthetic header/mode/register checks pass for CGB detection, DMG inert behavior, forced CGB-only startup, VRAM/WRAM bank selects, CGB palettes, OPRI, and KEY1 placeholder state. Local Pokemon Crystal smoke detects `CGB only ($C0)`, default `Mode: CGB`, `--mode auto` `Mode: CGB`, CPU `A=$11`, a 60-frame RGB CGB render with 3 unique colors, and a 2400-frame attribute sample with palette, tile-bank, X-flip, and Y-flip attributes present. Synthetic CGB renderer checks also cover OBJ palette selection, OBJ tile VRAM-bank selection, OAM-order priority, OPRI DMG-style priority, BG priority attributes, and LCDC.0 priority behavior.
+- CGB foundation/render smoke: synthetic header/mode/register checks pass for CGB detection, DMG inert behavior, forced CGB-only startup, VRAM/WRAM bank selects, CGB palettes, OPRI, GDMA/HDMA, and KEY1 STOP-triggered double-speed switching. Synthetic double-speed checks verify TIMA/serial/OAM DMA stay on the CPU-speed domain while PPU/APU/HDMA stay on the normal-speed device domain. Local Pokemon Crystal smoke detects `CGB only ($C0)`, default `Mode: CGB`, `--mode auto` `Mode: CGB`, CPU `A=$11`, a 60-frame RGB CGB render with 3 unique colors, 32 HDMA blocks / 512 VRAM-DMA bytes, and no KEY1 arm/toggle during the quick Crystal render smoke. The 2400-frame attribute sample has palette, tile-bank, X-flip, and Y-flip attributes present. Synthetic CGB renderer checks also cover OBJ palette selection, OBJ tile VRAM-bank selection, OAM-order priority, OPRI DMG-style priority, BG priority attributes, and LCDC.0 priority behavior.
 
 Verify headless/live WAV identity for a fixed Pokemon Red run:
 
@@ -279,7 +279,7 @@ SHA-256: 6575f192cdea8ed0bf84c1ee775add94035c7e556a36c2a094a1dbb2f052b10b
 
 ## Current Limitations
 
-- CGB foundation is started, and CGB-only cartridges now enter CGB mode with basic post-boot identity, first-pass BG/window palette/tile-attribute rendering, and first-pass OBJ palette/priority rendering. HDMA, double-speed timing, exact CGB FIFO/raster timing, full CGB boot flow, and broad CGB game compatibility are not implemented yet.
+- CGB foundation is started, and CGB-only cartridges now enter CGB mode with basic post-boot identity, KEY1 STOP-triggered double-speed switching, GDMA/HDMA VRAM DMA, first-pass BG/window palette/tile-attribute rendering, and first-pass OBJ palette/priority rendering. Exact STOP speed-switch blackout timing, exact GDMA/HDMA CPU-stall timing, exact CGB FIFO/raster timing, full CGB boot flow, and broad CGB game compatibility are not implemented yet.
 - PPU coverage is strong for the selected strict gate, but the emulator still does not model a complete per-dot pixel FIFO or every possible mid-scanline raster edge case.
 - APU/audio is functional, deterministic for current PCM identity checks, and covered by a fully passing Blargg `dmg_sound` single-ROM lane, but mature analog filtering and stricter APU-suite compatibility are still pending.
 - Commercial compatibility is early. Pokemon Red is the primary tested gameplay target; Super Mario Land is an action/performance smoke target; Dr. Mario is a visual smoke target. Other games should be treated as exploratory until they are added to the compatibility matrix.

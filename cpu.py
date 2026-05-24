@@ -2936,7 +2936,8 @@ class CPU:
         line_dots = getattr(ppu, "line_dots", 0)
         if scanline < PPU_VBLANK_LINE:
             cycles = (PPU_VBLANK_LINE - scanline) * PPU_DOTS_PER_LINE - line_dots
-            return max(1, min(max_cycles, cycles))
+            cpu_cycles = self.bus.cpu_cycles_for_device_cycles(cycles)
+            return max(1, min(max_cycles, cpu_cycles))
         return self._cycles_until_frame_boundary(max_cycles)
 
     def _cycles_until_frame_boundary(self, max_cycles: int) -> int:
@@ -2946,7 +2947,8 @@ class CPU:
         scanline = getattr(ppu, "_scanline", 0)
         line_dots = getattr(ppu, "line_dots", 0)
         cycles = (PPU_LINES_PER_FRAME - scanline) * PPU_DOTS_PER_LINE - line_dots
-        return max(1, min(max_cycles, cycles))
+        cpu_cycles = self.bus.cpu_cycles_for_device_cycles(cycles)
+        return max(1, min(max_cycles, cpu_cycles))
 
     def _matches_bytes(self, address: int, values: tuple[int, ...]) -> bool:
         address &= 0xFFFF
@@ -5897,7 +5899,10 @@ class CPU:
                 ]
             return bus.mapper.read_rom(address)
         if 0x8000 <= address <= 0x9FFF and stable_cycles:
-            if bus.ppu.cycles_until_next_event() > stable_cycles:
+            if (
+                bus.cpu_cycles_for_device_cycles(bus.ppu.cycles_until_next_event())
+                > stable_cycles
+            ):
                 return bus.vram[address - 0x8000] if bus._vram_read_accessible() else 0xFF
             return None
         if 0xA000 <= address <= 0xBFFF:
@@ -5943,7 +5948,10 @@ class CPU:
             bus.mapper.write_rom_control(address, value)
             return True
         if 0x8000 <= address <= 0x9FFF and stable_cycles:
-            if bus.ppu.cycles_until_next_event() > stable_cycles:
+            if (
+                bus.cpu_cycles_for_device_cycles(bus.ppu.cycles_until_next_event())
+                > stable_cycles
+            ):
                 if bus._vram_write_accessible():
                     bus.vram[address - 0x8000] = value
                 return True

@@ -85,6 +85,10 @@ def run_headless_smoke(rom: Path, instruction_limit: int) -> tuple[dict[str, Any
             "ppu_mode": emulator.bus.ppu.mode,
             "lcdc": emulator.bus.read8(0xFF40),
             "key1": emulator.bus.read8(0xFF4D),
+            "double_speed": emulator.bus.double_speed,
+            "speed_switch_armed": emulator.bus.speed_switch_armed,
+            "speed_switch_arm_writes": emulator.bus.speed_switch_arm_writes,
+            "speed_switches": emulator.bus.speed_switches,
         },
         failures,
     )

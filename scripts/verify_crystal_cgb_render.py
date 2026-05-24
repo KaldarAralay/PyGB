@@ -230,7 +230,9 @@ def run_crystal_render_smoke(
     if not emulator.bus.cgb_mode:
         failures.append("crystal: emulator did not enter CGB mode")
 
+    initial_key1 = emulator.bus.read8(0xFF4D)
     emulator.run(max_instructions=None, max_frames=frames)
+    final_key1 = emulator.bus.read8(0xFF4D)
     framebuffer = emulator.bus.ppu.framebuffer
     pixels = [pixel for row in framebuffer for pixel in row]
     rgb_pixels = sum(1 for pixel in pixels if pixel & RGB_PIXEL_FLAG)
@@ -253,6 +255,9 @@ def run_crystal_render_smoke(
     bg_palette_nonzero = sum(1 for value in emulator.bus.bg_palette_ram if value)
     if bg_palette_nonzero == 0:
         failures.append("crystal: BG palette RAM remained blank")
+    vram_dma_blocks = emulator.bus.vram_dma_gdma_blocks + emulator.bus.vram_dma_hdma_blocks
+    if vram_dma_blocks == 0:
+        failures.append("crystal: CGB VRAM DMA path was not exercised")
 
     attrs_nonzero = sum(1 for value in attrs if value)
     attrs_palette = sum(1 for value in attrs if value & 0x07)
@@ -281,6 +286,16 @@ def run_crystal_render_smoke(
             "rgb_pixels": rgb_pixels,
             "unique_rgb_colors": len(unique_rgb),
             "bg_palette_nonzero": bg_palette_nonzero,
+            "vram_dma_blocks": vram_dma_blocks,
+            "vram_dma_gdma_blocks": emulator.bus.vram_dma_gdma_blocks,
+            "vram_dma_hdma_blocks": emulator.bus.vram_dma_hdma_blocks,
+            "vram_dma_bytes": emulator.bus.vram_dma_bytes,
+            "key1_initial": initial_key1,
+            "key1_final": final_key1,
+            "speed_switch_armed": emulator.bus.speed_switch_armed,
+            "double_speed": emulator.bus.double_speed,
+            "speed_switch_arm_writes": emulator.bus.speed_switch_arm_writes,
+            "speed_switches": emulator.bus.speed_switches,
             "attrs_nonzero": attrs_nonzero,
             "attrs_palette": attrs_palette,
             "attrs_bank": attrs_bank,
@@ -293,7 +308,10 @@ def run_crystal_render_smoke(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Verify first-pass CGB BG/window attributes and OBJ palette/priority rendering."
+        description=(
+            "Verify first-pass CGB BG/window attributes, OBJ palette/priority, "
+            "VRAM DMA activity, and KEY1 double-speed startup activity."
+        )
     )
     parser.add_argument("--rom", type=Path, default=ROOT / "roms" / "crystal.gbc")
     parser.add_argument("--frames", type=int, default=60)

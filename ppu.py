@@ -160,6 +160,9 @@ class PPUBus(Protocol):
     def interrupt_flags(self, value: int) -> None:
         ...
 
+    def on_hblank_start(self, ly: int) -> None:
+        ...
+
 
 class PPU:
     def __init__(self, bus: PPUBus) -> None:
@@ -342,6 +345,7 @@ class PPU:
                 ):
                     self._finish_mode3_line(ly)
                     self._set_mode(MODE_HBLANK, request_interrupt=False)
+                    self.bus.on_hblank_start(ly)
                     self._schedule_hblank_stat_interrupt()
                 if self.line_dots == DOTS_PER_LINE - 4:
                     self._preload_next_ly(ly + 1)
