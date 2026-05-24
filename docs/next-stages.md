@@ -1,12 +1,12 @@
 # GBemu Next Stages
 
-Date: 2026-05-23
+Date: 2026-05-24
 
 This document is the active roadmap. Historical Stage 1 CPU evidence is preserved in `docs\stage1-audit.md`; current compatibility evidence is in `docs\compatibility.md`; the Pan Docs subsystem inventory is in `docs\pandocs-inventory.md`.
 
 ## Current State
 
-GBemu is now a playable DMG-first emulator for the current primary real-ROM target, Pokemon Red, with Super Mario Land added as a quick early-action performance smoke target. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, rolling frame/audio profiling, and a minimal CGB foundation with forced CGB-only startup identity, KEY1 double-speed switching, and Crystal first-frame/window-startup/render smoke coverage.
+GBemu is now a playable DMG-first emulator for the current primary real-ROM target, Pokemon Red, with Super Mario Land added as a quick early-action performance smoke target. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, rolling frame/audio profiling, and a minimal CGB foundation with forced CGB-only startup identity, KEY1 double-speed switching, Crystal first-frame/window-startup smoke coverage, and staged Crystal CGB render-gate coverage.
 
 The project is not cycle-perfect and not yet a broad commercial compatibility emulator. The strongest next work is to keep adding evidence while improving accuracy and tail-latency behavior.
 
@@ -128,11 +128,12 @@ Done:
 - Unit coverage for default DMG behavior and exposed CGB behavior.
 - `scripts\verify_cgb_foundation.py` synthetic smoke verifier, including GDMA/HDMA data movement, KEY1 double-speed timing-domain checks, and a local Pokemon Crystal header/startup check when `roms\crystal.gbc` exists.
 - `scripts\verify_crystal_window_startup.py` headless/window smoke verifier, confirming Crystal reaches the first frame in CGB mode and Tk presents before first-frame emulation begins while reporting KEY1 speed-switch activity.
-- `scripts\verify_crystal_cgb_render.py` render smoke verifier, including synthetic CGB BG palette/bank/flip checks, synthetic CGB OBJ palette/bank/priority checks, and Pokemon Crystal RGB render plus required CGB VRAM-DMA activity and KEY1 activity reporting.
+- `scripts\verify_crystal_cgb_render.py` staged render verifier, including synthetic CGB BG palette/bank/flip checks, synthetic CGB OBJ palette/bank/priority checks, and Pokemon Crystal 60/600/2400/3600-frame checkpoints with JSON metrics, BMP dumps, required CGB VRAM-DMA activity, CGB tile-attribute assertions from 2400 frames onward, LCDC/STAT/LY capture, and KEY1 activity reporting.
+- `scripts\verify_crystal_cgb_oracle.py` PyBoy CGB visual oracle, comparing GBemu and PyBoy RGB frames at 60, 600, 2400, 3600, and a scripted 4800-frame title/menu checkpoint while dumping GBemu/PyBoy/diff PNGs and JSON diff metrics.
 
 Remaining:
 
-- Broader CGB render oracles and exact CGB raster/FIFO timing.
+- Stricter CGB visual oracle thresholds, broader CGB render oracles, and exact CGB raster/FIFO timing.
 - Exact GDMA/HDMA CPU-stall timing.
 - Exact STOP speed-switch blackout timing.
 - Full CGB boot behavior and real CGB ROM compatibility gates.
@@ -147,7 +148,8 @@ Run these before treating a compatibility or timing change as safe:
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_apu.py --json-output qa-output\apu-dmg-sound.json
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_cgb_foundation.py --json-output qa-output\cgb-foundation.json
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_crystal_window_startup.py --json-output qa-output\crystal-window-startup-headless.json
-.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_crystal_cgb_render.py --json-output qa-output\crystal-cgb-render.json
+.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_crystal_cgb_render.py --checkpoint-frames 60,600,2400,3600 --require-crystal-attributes --json-output qa-output\crystal-cgb-render-staged.json --frame-output-dir qa-output\crystal-cgb-stages
+python -B scripts\verify_crystal_cgb_oracle.py --output-dir qa-output\crystal-cgb-pyboy-oracle --json-output qa-output\crystal-cgb-pyboy-oracle.json
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_pokemon_red.py
 python -B scripts\verify_oak_encyclopedia_oracle.py
 python -B scripts\verify_pokemon_red_sprite_scene_oracle.py
@@ -176,10 +178,10 @@ For CGB window-startup/display-ordering changes, also run:
 python -B scripts\verify_crystal_window_startup.py --run-window --json-output qa-output\crystal-window-startup.json
 ```
 
-For CGB renderer changes, also run the longer Crystal attribute sample when time allows:
+For quick CGB renderer smoke during inner-loop work, the staged script can still be limited to one checkpoint:
 
 ```powershell
-.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_crystal_cgb_render.py --frames 2400 --require-crystal-attributes --json-output qa-output\crystal-cgb-render-attrs.json
+.\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_crystal_cgb_render.py --frames 60 --json-output qa-output\crystal-cgb-render-quick.json
 ```
 
 Current target thresholds:
