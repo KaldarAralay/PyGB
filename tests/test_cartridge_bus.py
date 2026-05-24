@@ -10,7 +10,7 @@ from bus import (
     SERIAL_INTERNAL_TRANSFER_CYCLES,
 )
 from cartridge import Cartridge, NINTENDO_LOGO, compute_header_checksum
-from ppu import DOTS_PER_LINE, MODE2_DOTS, MODE3_DOTS, MODE_HBLANK
+from ppu import DOTS_PER_LINE, MODE2_DOTS, MODE3_DOTS, MODE_DRAWING, MODE_HBLANK
 
 
 def make_rom(program: bytes = b"", title: bytes = b"TEST", cgb_flag: int = 0x00) -> bytes:
@@ -528,6 +528,24 @@ class CartridgeBusTests(unittest.TestCase):
 
         bus.write8(0xFF68, 0xFF)
         self.assertEqual(bus.read8(0xFF68), 0xBF)
+
+    def test_cgb_palette_data_mode3_write_is_blocked_but_auto_increments(self) -> None:
+        bus = make_cgb_bus()
+        bus.write8(0xFF40, 0x91)
+        bus.write8(0xFF68, 0x80)
+        bus.write8(0xFF69, 0x12)
+        bus.write8(0xFF68, 0x80)
+
+        bus.tick(MODE2_DOTS)
+
+        self.assertEqual(bus.ppu.mode, MODE_DRAWING)
+        bus.write8(0xFF69, 0x34)
+        self.assertEqual(bus.read8(0xFF68), 0x81)
+        self.assertEqual(bus.read8(0xFF69), 0xFF)
+
+        bus.tick(MODE3_DOTS)
+        bus.write8(0xFF68, 0x00)
+        self.assertEqual(bus.read8(0xFF69), 0x12)
 
     def test_key1_arms_and_reports_cgb_speed_state(self) -> None:
         bus = make_cgb_bus()

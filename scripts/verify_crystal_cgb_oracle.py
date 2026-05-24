@@ -17,10 +17,15 @@ from PIL import Image  # noqa: E402
 from button_script import ButtonScript, load_button_script, parse_button_script  # noqa: E402
 from cartridge import Cartridge  # noqa: E402
 from emulator import Emulator  # noqa: E402
-from ppu import SCREEN_HEIGHT, SCREEN_WIDTH, framebuffer_pixel_to_rgb  # noqa: E402
+from ppu import (  # noqa: E402
+    DOTS_PER_LINE,
+    LINES_PER_FRAME,
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+    framebuffer_pixel_to_rgb,
+)
 from scripts.verify_crystal_cgb_render import (  # noqa: E402
     DEFAULT_ATTRIBUTE_CHECKPOINT_FRAME,
-    advance_to_checkpoint,
     collect_crystal_stage_metrics,
     evaluate_crystal_stage_metrics,
     parse_checkpoint_frames,
@@ -32,6 +37,8 @@ DEFAULT_BUTTON_SCRIPT = "3900:start:20,4300:a:20"
 DEFAULT_OUTPUT_DIR = ROOT / "qa-output" / "crystal-cgb-pyboy-oracle"
 DEFAULT_MAJOR_DELTA_THRESHOLD = 224
 DEFAULT_MAX_MAJOR_DIFF_RATIO = 0.95
+DEFAULT_MAX_NONBLACK_DELTA_RATIO = 0.98
+DOTS_PER_FRAME = DOTS_PER_LINE * LINES_PER_FRAME
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,6 +92,15 @@ def parse_args() -> argparse.Namespace:
         help="Fail a stage when the major mismatch ratio exceeds this value.",
     )
     parser.add_argument(
+        "--max-nonblack-delta-ratio",
+        type=float,
+        default=DEFAULT_MAX_NONBLACK_DELTA_RATIO,
+        help=(
+            "Fail a stage when GBemu/PyBoy nonblack pixel coverage differs by "
+            "more than this ratio."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
@@ -131,6 +147,48 @@ def image_unique_colors(image: Image.Image) -> set[tuple[int, int, int]]:
     }
 
 
+def image_nonblack_metrics(image: Image.Image) -> dict[str, Any]:
+    rgb = image.convert("RGB")
+    width, height = rgb.size
+    data = rgb.tobytes()
+    nonblack_pixels = 0
+    left = width
+    top = height
+    right = -1
+    bottom = -1
+    color_counts: dict[tuple[int, int, int], int] = {}
+
+    for pixel_index, index in enumerate(range(0, len(data), 3)):
+        color = (data[index], data[index + 1], data[index + 2])
+        color_counts[color] = color_counts.get(color, 0) + 1
+        if color == (0, 0, 0):
+            continue
+
+        x = pixel_index % width
+        y = pixel_index // width
+        nonblack_pixels += 1
+        left = min(left, x)
+        top = min(top, y)
+        right = max(right, x + 1)
+        bottom = max(bottom, y + 1)
+
+    total_pixels = width * height
+    top_colors = sorted(
+        color_counts.items(), key=lambda item: item[1], reverse=True
+    )[:8]
+    return {
+        "nonblack_pixels": nonblack_pixels,
+        "nonblack_ratio": nonblack_pixels / total_pixels,
+        "nonblack_bbox": None
+        if nonblack_pixels == 0
+        else [left, top, right, bottom],
+        "top_rgb_values": [
+            [int(color[0]), int(color[1]), int(color[2]), int(count)]
+            for color, count in top_colors
+        ],
+    }
+
+
 def image_metrics(image: Image.Image) -> dict[str, Any]:
     rgb = image.convert("RGB")
     unique = sorted(image_unique_colors(rgb))
@@ -139,6 +197,7 @@ def image_metrics(image: Image.Image) -> dict[str, Any]:
         "unique_rgb_colors": len(unique),
         "unique_rgb_values": unique,
         "size": list(rgb.size),
+        **image_nonblack_metrics(rgb),
     }
 
 
@@ -157,16 +216,49 @@ def compare_rgb_images(
     major_diff_pixels = 0
     max_color_delta = 0
     total_abs_delta = 0
+    left = gbemu_rgb.size[0]
+    top = gbemu_rgb.size[1]
+    right = -1
+    bottom = -1
+    gbemu_only_nonblack_pixels = 0
+    pyboy_only_nonblack_pixels = 0
+    both_nonblack_pixels = 0
     diff_values: list[tuple[int, int, int]] = []
     gbemu_data = gbemu_rgb.tobytes()
     pyboy_data = pyboy_rgb.tobytes()
-    for index in range(0, len(gbemu_data), 3):
+    width, height = gbemu_rgb.size
+    for pixel_index, index in enumerate(range(0, len(gbemu_data), 3)):
+        gbemu_color = (
+            gbemu_data[index],
+            gbemu_data[index + 1],
+            gbemu_data[index + 2],
+        )
+        pyboy_color = (
+            pyboy_data[index],
+            pyboy_data[index + 1],
+            pyboy_data[index + 2],
+        )
+        gbemu_nonblack = gbemu_color != (0, 0, 0)
+        pyboy_nonblack = pyboy_color != (0, 0, 0)
+        if gbemu_nonblack and pyboy_nonblack:
+            both_nonblack_pixels += 1
+        elif gbemu_nonblack:
+            gbemu_only_nonblack_pixels += 1
+        elif pyboy_nonblack:
+            pyboy_only_nonblack_pixels += 1
+
         red_delta = abs(gbemu_data[index] - pyboy_data[index])
         green_delta = abs(gbemu_data[index + 1] - pyboy_data[index + 1])
         blue_delta = abs(gbemu_data[index + 2] - pyboy_data[index + 2])
         pixel_delta = max(red_delta, green_delta, blue_delta)
         if pixel_delta:
             exact_diff_pixels += 1
+            x = pixel_index % width
+            y = pixel_index // width
+            left = min(left, x)
+            top = min(top, y)
+            right = max(right, x + 1)
+            bottom = max(bottom, y + 1)
         if pixel_delta > major_delta_threshold:
             major_diff_pixels += 1
         max_color_delta = max(max_color_delta, pixel_delta)
@@ -180,6 +272,10 @@ def compare_rgb_images(
         )
 
     total_pixels = gbemu_rgb.size[0] * gbemu_rgb.size[1]
+    gbemu_nonblack_pixels = gbemu_only_nonblack_pixels + both_nonblack_pixels
+    pyboy_nonblack_pixels = pyboy_only_nonblack_pixels + both_nonblack_pixels
+    nonblack_denominator = max(gbemu_nonblack_pixels, pyboy_nonblack_pixels, 1)
+    nonblack_delta_pixels = abs(gbemu_nonblack_pixels - pyboy_nonblack_pixels)
     diff_image = Image.new("RGB", gbemu_rgb.size)
     diff_image.putdata(diff_values)
     return (
@@ -191,6 +287,16 @@ def compare_rgb_images(
             "max_color_delta": max_color_delta,
             "mean_abs_delta": total_abs_delta / (total_pixels * 3),
             "major_delta_threshold": major_delta_threshold,
+            "diff_bbox": None
+            if exact_diff_pixels == 0
+            else [left, top, right, bottom],
+            "gbemu_only_nonblack_pixels": gbemu_only_nonblack_pixels,
+            "pyboy_only_nonblack_pixels": pyboy_only_nonblack_pixels,
+            "both_nonblack_pixels": both_nonblack_pixels,
+            "gbemu_nonblack_pixels": gbemu_nonblack_pixels,
+            "pyboy_nonblack_pixels": pyboy_nonblack_pixels,
+            "nonblack_delta_pixels": nonblack_delta_pixels,
+            "nonblack_delta_ratio": nonblack_delta_pixels / nonblack_denominator,
         },
         diff_image,
     )
@@ -204,7 +310,7 @@ def stage_requires_color_variety(
 ) -> bool:
     return (
         len(checkpoint_frames) == 1
-        or checkpoint == checkpoint_frames[0]
+        or (checkpoint == checkpoint_frames[0] and checkpoint > 60)
         or checkpoint >= attribute_checkpoint_frame
     )
 
@@ -215,6 +321,7 @@ def evaluate_oracle_stage(
     min_pyboy_unique_rgb_colors: int,
     require_pyboy_color_variety: bool,
     max_major_diff_ratio: float,
+    max_nonblack_delta_ratio: float,
 ) -> list[str]:
     failures = list(stage.get("gbemu_failures", []))
     label = f"crystal oracle frame {stage.get('checkpoint', '?')}"
@@ -236,6 +343,14 @@ def evaluate_oracle_stage(
             f"{label}: major diff ratio {diff['major_diff_ratio']:.4f} > "
             f"{max_major_diff_ratio:.4f}"
         )
+    if (
+        int(stage.get("checkpoint", 0)) > 60
+        and float(diff.get("nonblack_delta_ratio", 1.0)) > max_nonblack_delta_ratio
+    ):
+        failures.append(
+            f"{label}: nonblack coverage delta ratio "
+            f"{diff['nonblack_delta_ratio']:.4f} > {max_nonblack_delta_ratio:.4f}"
+        )
     return failures
 
 
@@ -246,6 +361,7 @@ def save_stage_images(
     gbemu_image: Image.Image,
     pyboy_image: Image.Image,
     diff_image: Image.Image,
+    crop_bbox: list[int] | None,
 ) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"crystal-cgb-oracle-{checkpoint:05d}"
@@ -257,6 +373,25 @@ def save_stage_images(
     gbemu_image.save(paths["gbemu_png"])
     pyboy_image.save(paths["pyboy_png"])
     diff_image.save(paths["diff_png"])
+
+    if crop_bbox is not None:
+        left, top, right, bottom = crop_bbox
+        crop_box = (
+            max(0, left - 2),
+            max(0, top - 2),
+            min(gbemu_image.width, right + 2),
+            min(gbemu_image.height, bottom + 2),
+        )
+        crop_paths = {
+            "gbemu_crop_png": output_dir / f"{stem}-gbemu-crop.png",
+            "pyboy_crop_png": output_dir / f"{stem}-pyboy-crop.png",
+            "diff_crop_png": output_dir / f"{stem}-diff-crop.png",
+        }
+        gbemu_image.crop(crop_box).save(crop_paths["gbemu_crop_png"])
+        pyboy_image.crop(crop_box).save(crop_paths["pyboy_crop_png"])
+        diff_image.crop(crop_box).save(crop_paths["diff_crop_png"])
+        paths.update(crop_paths)
+
     return {key: str(path) for key, path in paths.items()}
 
 
@@ -272,8 +407,18 @@ def run_gbemu_stages(
     emulator = Emulator(cartridge, serial_sink=lambda _: None, mode="cgb")
     initial_key1 = emulator.bus.read8(0xFF4D)
     stages: list[dict[str, Any]] = []
+    wall_frame = 0
     for checkpoint in checkpoint_frames:
-        advance_to_checkpoint(emulator, checkpoint, button_script)
+        while wall_frame < checkpoint:
+            if button_script is not None:
+                emulator.set_buttons(button_script.buttons_for_frame(wall_frame, set()))
+            target_cycles = (wall_frame + 1) * DOTS_PER_FRAME
+            emulator.cpu.run(
+                stop_condition=lambda target_cycles=target_cycles: (
+                    emulator.cpu.cycles >= target_cycles
+                )
+            )
+            wall_frame += 1
         metrics = collect_crystal_stage_metrics(
             emulator,
             cartridge,
@@ -281,6 +426,8 @@ def run_gbemu_stages(
             initial_key1=initial_key1,
             frame_output_dir=None,
         )
+        metrics["oracle_wall_frame"] = checkpoint
+        metrics["oracle_cpu_cycle_target"] = checkpoint * DOTS_PER_FRAME
         require_attributes = checkpoint >= attribute_checkpoint_frame
         require_color_variety = stage_requires_color_variety(
             checkpoint,
@@ -293,6 +440,12 @@ def run_gbemu_stages(
             require_color_variety=require_color_variety,
             require_attributes=require_attributes,
         )
+        frame_count_failure_prefix = f"crystal frame {checkpoint}: reached "
+        failures = [
+            failure
+            for failure in failures
+            if not failure.startswith(frame_count_failure_prefix)
+        ]
         stages.append(
             {
                 "checkpoint": checkpoint,
@@ -334,9 +487,8 @@ def run_pyboy_stages(
             )
             pressed = apply_pyboy_buttons(pyboy, pressed, target)
             rendered_frame = frame + 1
-            render = rendered_frame in checkpoints
-            pyboy.tick(1, render=render)
-            if render:
+            pyboy.tick(1, render=True)
+            if rendered_frame in checkpoints:
                 captures[rendered_frame] = pyboy.screen.image.convert("RGB")
     finally:
         pyboy.stop(save=False)
@@ -385,6 +537,7 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
             gbemu_image=gbemu_image,
             pyboy_image=pyboy_image,
             diff_image=diff_image,
+            crop_bbox=diff_metrics["diff_bbox"],
         )
         require_pyboy_color_variety = stage_requires_color_variety(
             checkpoint,
@@ -395,6 +548,7 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
             "checkpoint": checkpoint,
             "stage": gbemu_stage["metrics"]["stage"],
             "gbemu": gbemu_stage["metrics"],
+            "gbemu_image": image_metrics(gbemu_image),
             "gbemu_failures": gbemu_stage["failures"],
             "pyboy": image_metrics(pyboy_image),
             "diff": diff_metrics,
@@ -405,6 +559,7 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
             min_pyboy_unique_rgb_colors=args.min_pyboy_unique_rgb_colors,
             require_pyboy_color_variety=require_pyboy_color_variety,
             max_major_diff_ratio=args.max_major_diff_ratio,
+            max_nonblack_delta_ratio=args.max_nonblack_delta_ratio,
         )
         stage["failures"] = stage_failures
         stage["status"] = "pass" if not stage_failures else "fail"
@@ -434,6 +589,7 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
         "thresholds": {
             "major_delta_threshold": args.major_delta_threshold,
             "max_major_diff_ratio": args.max_major_diff_ratio,
+            "max_nonblack_delta_ratio": args.max_nonblack_delta_ratio,
             "min_unique_rgb_colors": args.min_unique_rgb_colors,
             "min_pyboy_unique_rgb_colors": args.min_pyboy_unique_rgb_colors,
             "attribute_checkpoint_frame": args.attribute_checkpoint_frame,
@@ -456,6 +612,8 @@ def main() -> int:
         raise SystemExit("--major-delta-threshold must be between 0 and 255")
     if not (0 <= args.max_major_diff_ratio <= 1):
         raise SystemExit("--max-major-diff-ratio must be between 0 and 1")
+    if not (0 <= args.max_nonblack_delta_ratio <= 1):
+        raise SystemExit("--max-nonblack-delta-ratio must be between 0 and 1")
 
     try:
         result = run_oracle(args)

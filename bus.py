@@ -653,10 +653,14 @@ class Bus:
         if offset == 0x68:
             return self.io[0x68] & 0xBF
         if offset == 0x69:
+            if not self._cgb_palette_data_accessible():
+                return 0xFF
             return self.bg_palette_ram[self.io[0x68] & 0x3F]
         if offset == 0x6A:
             return self.io[0x6A] & 0xBF
         if offset == 0x6B:
+            if not self._cgb_palette_data_accessible():
+                return 0xFF
             return self.obj_palette_ram[self.io[0x6A] & 0x3F]
         if offset == 0x6C:
             return 0xFE | self.cgb_object_priority_mode
@@ -698,9 +702,13 @@ class Bus:
         value: int,
     ) -> None:
         index = self.io[index_offset] & 0x3F
-        palette_ram[index] = value
+        if self._cgb_palette_data_accessible():
+            palette_ram[index] = value
         if self.io[index_offset] & 0x80:
             self.io[index_offset] = (self.io[index_offset] & 0x80) | ((index + 1) & 0x3F)
+
+    def _cgb_palette_data_accessible(self) -> bool:
+        return not (self.ppu.lcd_enabled and self.ppu.mode == MODE_DRAWING)
 
     def on_hblank_start(self, ly: int) -> None:
         if not self._vram_dma_hblank_active or ly >= VISIBLE_LINES:

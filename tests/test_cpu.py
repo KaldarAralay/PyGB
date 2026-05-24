@@ -707,6 +707,18 @@ class CPUTests(unittest.TestCase):
         self.assertEqual(cpu.instructions, 51)
         self.assertEqual(cpu.cycles, 472)
 
+    def test_direct_fast_cgb_vram_read_write_respects_selected_bank(self) -> None:
+        cpu, bus = make_cgb_cpu(b"\x00")
+        bus.write8(0xFF4F, 0x01)
+        bus.vram[0x1800] = 0x11
+        bus.vram[0x2000 + 0x1800] = 0x22
+
+        self.assertEqual(cpu._read8_direct_fast(0x9800, stable_cycles=8), 0x22)
+        self.assertTrue(cpu._write8_direct_fast(0x9800, 0x33, stable_cycles=8))
+
+        self.assertEqual(bus.vram[0x1800], 0x11)
+        self.assertEqual(bus.vram[0x2000 + 0x1800], 0x33)
+
     def test_run_fast_forwards_pokemon_bank_restore_return(self) -> None:
         cpu, bus = make_mbc3_cpu(0x3E8D)
         rom = bytearray(bus.cartridge.data)

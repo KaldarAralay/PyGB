@@ -6,11 +6,11 @@ This document is the active roadmap. Historical Stage 1 CPU evidence is preserve
 
 ## Current State
 
-GBemu is now a playable DMG-first emulator for the current primary real-ROM target, Pokemon Red, with Super Mario Land added as a quick early-action performance smoke target. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, rolling frame/audio profiling, and a minimal CGB foundation with forced CGB-only startup identity, KEY1 double-speed switching, Crystal first-frame/window-startup smoke coverage, and staged Crystal CGB render-gate coverage.
+GBemu is now a playable DMG-first emulator for the current primary real-ROM target, Pokemon Red, with Super Mario Land added as a quick early-action performance smoke target. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, rolling frame/audio profiling, and a minimal CGB foundation with forced CGB-only startup identity, KEY1 double-speed switching, CGB palette mode-3 data access blocking, Crystal first-frame/window-startup smoke coverage, staged Crystal CGB render-gate coverage, and a tolerant Crystal PyBoy visual oracle.
 
 The project is not cycle-perfect and not yet a broad commercial compatibility emulator. The strongest next work is to keep adding evidence while improving accuracy and tail-latency behavior.
 
-Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, functional audio, and CGB foundation startup/registers/banking/window ordering plus KEY1 double-speed switching, GDMA/HDMA, first-pass BG/window palette/tile-attribute rendering, and OBJ palette/priority rendering are in place. The largest remaining gaps are full pixel FIFO completeness, stricter APU suite/analog accuracy, broader commercial compatibility, CGB boot behavior, exact CGB DMA/FIFO/speed-switch edge timing, and real link/SGB/peripheral behavior.
+Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, functional audio, and CGB foundation startup/registers/banking/window ordering plus KEY1 double-speed switching, GDMA/HDMA, CGB palette mode-3 access behavior, first-pass BG/window palette/tile-attribute rendering, and OBJ palette/priority rendering are in place. The largest remaining gaps are full pixel FIFO completeness, stricter APU suite/analog accuracy, broader commercial compatibility, CGB boot behavior, exact CGB DMA/FIFO/speed-switch edge timing, and real link/SGB/peripheral behavior.
 
 ## Completed Milestones
 
@@ -120,7 +120,7 @@ Done:
 - Explicit emulator mode selection with default DMG behavior preserved for DMG/CGB-enhanced ROMs, forced CGB mode for CGB-only ROMs, and `--mode dmg|cgb|auto` available in the CLI.
 - Basic CGB post-boot CPU identity, including `A=$11`.
 - DMG-mode CGB-only IO remains inert.
-- CGB-mode foundations for `FF4F` VRAM bank select, `FF70` WRAM bank select, `FF51`-`FF55` GDMA/HDMA VRAM DMA, `FF68`-`FF6C` palette RAM/indexing and OPRI, and KEY1 `FF4D` arming/readback/STOP-triggered double-speed switching.
+- CGB-mode foundations for `FF4F` VRAM bank select, `FF70` WRAM bank select, `FF51`-`FF55` GDMA/HDMA VRAM DMA, `FF68`-`FF6C` palette RAM/indexing and OPRI including blocked palette data reads/writes during PPU mode 3 with auto-increment preserved, and KEY1 `FF4D` arming/readback/STOP-triggered double-speed switching.
 - CGB double-speed timing domains: DIV/TIMA, serial, and OAM DMA run on the CPU-speed domain; PPU, APU, frame pacing, and HDMA HBlank cadence stay on the normal-speed device domain.
 - First-pass CGB BG/window renderer support for BG palette RAM colors, tile-map palette attributes, tile VRAM-bank attributes, and X/Y flip attributes.
 - First-pass CGB OBJ renderer support for OBJ palette RAM colors, OBJ palette attributes, OBJ tile VRAM-bank attributes, CGB OAM-order priority, `FF6C`/OPRI DMG-style priority mode, BG priority attributes, and LCDC.0 priority behavior.
@@ -129,7 +129,7 @@ Done:
 - `scripts\verify_cgb_foundation.py` synthetic smoke verifier, including GDMA/HDMA data movement, KEY1 double-speed timing-domain checks, and a local Pokemon Crystal header/startup check when `roms\crystal.gbc` exists.
 - `scripts\verify_crystal_window_startup.py` headless/window smoke verifier, confirming Crystal reaches the first frame in CGB mode and Tk presents before first-frame emulation begins while reporting KEY1 speed-switch activity.
 - `scripts\verify_crystal_cgb_render.py` staged render verifier, including synthetic CGB BG palette/bank/flip checks, synthetic CGB OBJ palette/bank/priority checks, and Pokemon Crystal 60/600/2400/3600-frame checkpoints with JSON metrics, BMP dumps, required CGB VRAM-DMA activity, CGB tile-attribute assertions from 2400 frames onward, LCDC/STAT/LY capture, and KEY1 activity reporting.
-- `scripts\verify_crystal_cgb_oracle.py` PyBoy CGB visual oracle, comparing GBemu and PyBoy RGB frames at 60, 600, 2400, 3600, and a scripted 4800-frame title/menu checkpoint while dumping GBemu/PyBoy/diff PNGs and JSON diff metrics.
+- `scripts\verify_crystal_cgb_oracle.py` PyBoy CGB visual oracle, comparing GBemu and PyBoy RGB frames at 60, 600, 2400, 3600, and a scripted 4800 wall-frame title/menu checkpoint while dumping GBemu/PyBoy/diff/crop PNGs and JSON diff plus nonblack structural metrics.
 
 Remaining:
 
@@ -193,7 +193,19 @@ Current target thresholds:
 
 ## Recommended Next Goals
 
-### 1. Save Live-Window Profile Fixtures
+### 1. Continue Reducing Crystal CGB Visual Mismatch Classes
+
+The Crystal PyBoy oracle now compares wall-frame checkpoints, writes targeted crops, and records nonblack structural coverage. The frame-3600 wrong tile-attribute class was reduced by fixing CPU direct-fast CGB VRAM bank handling; staged Crystal now reports hundreds of bank-1 attrs instead of a few dozen. The next CGB work should continue reducing one visible mismatch class at a time.
+
+Suggested focus:
+
+- Treat frame 60 as a startup/LCD-transition sample, not a compatibility failure.
+- Use frame 600 for early logo coverage and LCD-transition timing.
+- Use frame 2400 as the color-conversion baseline because structural coverage is already close.
+- Use frame 3600 as the remaining larger structural target; tile-bank attributes are no longer the first suspect, so focus next on BG/window coverage, priority, color conversion, FIFO timing, or HDMA-visible timing.
+- Keep the Crystal staged gate, Crystal PyBoy oracle, Pokemon Red performance gate, Super Mario Land performance gate, Blargg CPU gate, and full unit suite green after each CGB change.
+
+### 2. Save Live-Window Profile Fixtures
 
 The headless performance gates now run fixed Pokemon Red text/sprite/audio scenarios and a Super Mario Land early-action scenario. The SML gate can also open a live window, capture `window-profile` lines, and fail on FPS, audio queue, underrun/drop, or APU sample-drop regressions.
 
@@ -205,7 +217,7 @@ The remaining workflow work is keeping representative live-window logs as fixtur
 
 The next step is to store a small set of representative live logs for Pokemon Red and Super Mario Land so parser validation can run without opening a window every time.
 
-### 2. Expand APU Accuracy Beyond Blargg `dmg_sound`
+### 3. Expand APU Accuracy Beyond Blargg `dmg_sound`
 
 Audio is now audible, deterministic, and covered by a repeatable APU ROM-suite lane with all 12 single Blargg `dmg_sound` ROMs passing. The next accuracy work should add stricter APU timing/oracle coverage one family at a time.
 
@@ -217,7 +229,7 @@ Suggested focus:
 - Length counter edge cases around DIV-APU falling edges.
 - Mixer/filter behavior after a stable digital baseline exists.
 
-### 3. Expand Commercial ROM Coverage
+### 4. Expand Commercial ROM Coverage
 
 Pokemon Red is the current primary target, and Super Mario Land is now the quick action/performance smoke target. Add one new title at a time and define objective checks for each:
 
@@ -229,13 +241,13 @@ Pokemon Red is the current primary target, and Super Mario Land is now the quick
 
 Dr. Mario is the next obvious candidate for a scripted gate because it already has user-reported visual smoke success.
 
-### 4. Continue PPU FIFO/Raster Work
+### 5. Continue PPU FIFO/Raster Work
 
 The selected PPU gate is green, but full hardware compatibility needs broader FIFO behavior. Keep the strict gate stable while using candidate Mealybug cases and additional suites to drive targeted improvements.
 
 Do not promote candidate image tests into the strict gate until the expected image source is appropriate for DMG mode or a CGB path exists.
 
-### 5. Keep Optimizations Guarded And Verified
+### 6. Keep Optimizations Guarded And Verified
 
 The current Pokemon Red speedups are guarded by exact ROM byte patterns, LCD state, cycle safety, and direct-memory checks. Keep that standard:
 
@@ -244,6 +256,6 @@ The current Pokemon Red speedups are guarded by exact ROM byte patterns, LCD sta
 - Fall back to normal interpretation for uncommon branches.
 - Verify against tests, strict PPU, fixed headless slices, live profile, and WAV identity when audio output is active.
 
-### 6. Grow CGB From The Foundation
+### 7. Grow CGB From The Foundation
 
 CGB is a large cross-cutting feature, not a small rendering option. Keep the current foundation narrow and verified, then add one subsystem at a time: broader CGB render oracles, exact CGB DMA/FIFO timing, exact speed-switch edge timing, and CGB boot behavior.

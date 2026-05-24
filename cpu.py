@@ -5903,7 +5903,7 @@ class CPU:
                 bus.cpu_cycles_for_device_cycles(bus.ppu.cycles_until_next_event())
                 > stable_cycles
             ):
-                return bus.vram[address - 0x8000] if bus._vram_read_accessible() else 0xFF
+                return bus.vram[bus._vram_offset(address)] if bus._vram_read_accessible() else 0xFF
             return None
         if 0xA000 <= address <= 0xBFFF:
             return bus.mapper.read_ram(address)
@@ -5953,7 +5953,7 @@ class CPU:
                 > stable_cycles
             ):
                 if bus._vram_write_accessible():
-                    bus.vram[address - 0x8000] = value
+                    bus.vram[bus._vram_offset(address)] = value
                 return True
             return False
         if 0xA000 <= address <= 0xBFFF:
