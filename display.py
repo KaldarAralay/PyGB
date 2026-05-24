@@ -10,7 +10,7 @@ from apu import DEFAULT_SAMPLE_RATE
 from audio import AudioPlaybackStats, BufferedAudioPlayer, WavAudioWriter
 from button_script import ButtonScript
 from joypad import BUTTON_BITS
-from ppu import DMG_GRAYSCALE, SCREEN_HEIGHT, SCREEN_WIDTH
+from ppu import DMG_GRAYSCALE, RGB_PIXEL_FLAG, SCREEN_HEIGHT, SCREEN_WIDTH, framebuffer_pixel_to_rgb
 
 if TYPE_CHECKING:
     from emulator import Emulator
@@ -134,10 +134,23 @@ def framebuffer_to_tk_rows(framebuffer: list[list[int]], scale: int = 1) -> list
     rows: list[str] = []
     colors_by_shade = TK_DMG_COLORS
     for row in framebuffer:
-        if scale == 1:
-            colors = [colors_by_shade[shade & 0x03] for shade in row]
+        if not any(pixel & RGB_PIXEL_FLAG for pixel in row):
+            if scale == 1:
+                colors = [colors_by_shade[shade & 0x03] for shade in row]
+            else:
+                colors = [colors_by_shade[shade & 0x03] for shade in row for _ in range(scale)]
+        elif scale == 1:
+            colors = [
+                f"#{red:02x}{green:02x}{blue:02x}"
+                for red, green, blue in (framebuffer_pixel_to_rgb(pixel) for pixel in row)
+            ]
         else:
-            colors = [colors_by_shade[shade & 0x03] for shade in row for _ in range(scale)]
+            colors = [
+                f"#{red:02x}{green:02x}{blue:02x}"
+                for pixel in row
+                for red, green, blue in [framebuffer_pixel_to_rgb(pixel)]
+                for _ in range(scale)
+            ]
         row_text = "{" + " ".join(colors) + "}"
         rows.extend([row_text] * scale)
     return rows
@@ -159,6 +172,11 @@ def framebuffer_to_tk_ppm_data(framebuffer: list[list[int]]) -> bytes:
     pixels = PPM_DMG_PIXELS
     wide_chunks = PPM_EIGHT_PIXEL_CHUNKS
     chunks = PPM_FOUR_PIXEL_CHUNKS
+    if any(pixel & RGB_PIXEL_FLAG for row in framebuffer for pixel in row):
+        for row in framebuffer:
+            for pixel in row:
+                data.extend(framebuffer_pixel_to_rgb(pixel))
+        return bytes(data)
     for row in framebuffer:
         x = 0
         row_width = len(row)

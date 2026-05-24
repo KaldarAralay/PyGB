@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from bus import Bus
+from bus import Bus, EmulationMode
 from cartridge import Cartridge, compute_header_checksum
 from ppu import (
     DOTS_PER_LINE,
@@ -15,12 +15,14 @@ from ppu import (
     MODE_VBLANK,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
+    rgb_to_framebuffer_pixel,
 )
 
 
-def make_rom() -> bytes:
+def make_rom(cgb_flag: int = 0x00) -> bytes:
     rom = bytearray([0x00] * 0x8000)
     rom[0x0134 : 0x0134 + len(b"PPUTEST")] = b"PPUTEST"
+    rom[0x0143] = cgb_flag
     rom[0x0147] = 0x00
     rom[0x0148] = 0x00
     rom[0x0149] = 0x00
@@ -28,8 +30,9 @@ def make_rom() -> bytes:
     return bytes(rom)
 
 
-def make_bus() -> Bus:
-    return Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+def make_bus(mode: EmulationMode = EmulationMode.DMG) -> Bus:
+    cgb_flag = 0x80 if mode == EmulationMode.CGB else 0x00
+    return Bus(Cartridge(make_rom(cgb_flag=cgb_flag)), serial_sink=lambda _: None, mode=mode)
 
 
 def set_tile_row(bus: Bus, tile_id: int, row: int, lo: int, hi: int) -> None:
@@ -43,6 +46,22 @@ def set_solid_tile(bus: Bus, tile_id: int, color_id: int) -> None:
     hi = 0xFF if color_id & 0x02 else 0x00
     for row in range(8):
         set_tile_row(bus, tile_id, row, lo, hi)
+
+
+def set_cgb_solid_tile(bus: Bus, bank: int, tile_id: int, color_id: int) -> None:
+    lo = 0xFF if color_id & 0x01 else 0x00
+    hi = 0xFF if color_id & 0x02 else 0x00
+    base = bank * 0x2000
+    for row in range(8):
+        address = base + tile_id * 16 + row * 2
+        bus.vram[address] = lo
+        bus.vram[address + 1] = hi
+
+
+def set_cgb_bg_color(bus: Bus, palette: int, color_id: int, rgb555: int) -> None:
+    offset = palette * 8 + color_id * 2
+    bus.bg_palette_ram[offset] = rgb555 & 0xFF
+    bus.bg_palette_ram[offset + 1] = (rgb555 >> 8) & 0x7F
 
 
 def set_sprite(bus: Bus, index: int, *, y: int = 16, x: int = 8, tile: int = 2, attrs: int = 0) -> None:
@@ -1307,6 +1326,46 @@ class PPUTests(unittest.TestCase):
 
         self.assertEqual(bus.ppu.framebuffer[0][0], 1)
         self.assertEqual(bus.ppu.framebuffer[0][1], 2)
+
+    def test_cgb_background_uses_bg_palette_ram(self) -> None:
+        bus = make_bus(EmulationMode.CGB)
+        bus.write8(0xFF40, 0x91)
+        set_cgb_solid_tile(bus, 0, 1, 2)
+        set_cgb_bg_color(bus, 3, 2, 0x03E0)
+        bus.vram[0x1800] = 1
+        bus.vram[0x2000 + 0x1800] = 0x03
+
+        bus.ppu.render_scanline(0)
+
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 255, 0))
+
+    def test_cgb_background_attribute_selects_tile_vram_bank(self) -> None:
+        bus = make_bus(EmulationMode.CGB)
+        bus.write8(0xFF40, 0x91)
+        set_cgb_solid_tile(bus, 0, 2, 1)
+        set_cgb_solid_tile(bus, 1, 2, 3)
+        set_cgb_bg_color(bus, 0, 1, 0x001F)
+        set_cgb_bg_color(bus, 0, 3, 0x7C00)
+        bus.vram[0x1800] = 2
+        bus.vram[0x2000 + 0x1800] = 0x08
+
+        bus.ppu.render_scanline(0)
+
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 0, 255))
+
+    def test_cgb_background_attributes_flip_tile_pixels(self) -> None:
+        bus = make_bus(EmulationMode.CGB)
+        bus.write8(0xFF40, 0x91)
+        tile_base = 4 * 16
+        bus.vram[tile_base + 7 * 2] = 0x00
+        bus.vram[tile_base + 7 * 2 + 1] = 0x01
+        set_cgb_bg_color(bus, 0, 2, 0x03E0)
+        bus.vram[0x1800] = 4
+        bus.vram[0x2000 + 0x1800] = 0x60
+
+        bus.ppu.render_scanline(0)
+
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 255, 0))
 
     def test_lcdc_bg_window_disable_blanks_background_and_window(self) -> None:
         bus = make_bus()

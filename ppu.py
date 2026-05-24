@@ -38,6 +38,11 @@ OBJ_PRIORITY = 0x80
 OBJ_Y_FLIP = 0x40
 OBJ_X_FLIP = 0x20
 OBJ_DMG_PALETTE = 0x10
+CGB_ATTR_PRIORITY = 0x80
+CGB_ATTR_Y_FLIP = 0x40
+CGB_ATTR_X_FLIP = 0x20
+CGB_ATTR_VRAM_BANK = 0x08
+CGB_ATTR_PALETTE_MASK = 0x07
 
 MODE_HBLANK = 0
 MODE_VBLANK = 1
@@ -50,6 +55,31 @@ DMG_GRAYSCALE = (
     (85, 85, 85),
     (0, 0, 0),
 )
+RGB_PIXEL_FLAG = 0x01000000
+RGB_PIXEL_MASK = 0x00FFFFFF
+
+
+def rgb_to_framebuffer_pixel(red: int, green: int, blue: int) -> int:
+    return RGB_PIXEL_FLAG | ((red & 0xFF) << 16) | ((green & 0xFF) << 8) | (blue & 0xFF)
+
+
+def framebuffer_pixel_to_rgb(pixel: int) -> tuple[int, int, int]:
+    if pixel & RGB_PIXEL_FLAG:
+        rgb = pixel & RGB_PIXEL_MASK
+        return (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF
+    return DMG_GRAYSCALE[pixel & 0x03]
+
+
+@lru_cache(maxsize=32768)
+def _rgb555_to_framebuffer_pixel(low: int, high: int) -> int:
+    value = (low & 0xFF) | ((high & 0x7F) << 8)
+    red5 = value & 0x1F
+    green5 = (value >> 5) & 0x1F
+    blue5 = (value >> 10) & 0x1F
+    red = (red5 << 3) | (red5 >> 2)
+    green = (green5 << 3) | (green5 >> 2)
+    blue = (blue5 << 3) | (blue5 >> 2)
+    return rgb_to_framebuffer_pixel(red, green, blue)
 
 
 @lru_cache(maxsize=4096)
@@ -111,6 +141,12 @@ class PPUBus(Protocol):
     vram: bytearray
     oam: bytearray
     io: bytearray
+    bg_palette_ram: bytearray
+    obj_palette_ram: bytearray
+
+    @property
+    def cgb_mode(self) -> bool:
+        ...
 
     @property
     def oam_dma_active(self) -> bool:
@@ -1708,8 +1744,8 @@ class PPU:
         lines = [f"P3\n{SCREEN_WIDTH} {SCREEN_HEIGHT}\n255"]
         for row in self.framebuffer:
             pixels: list[str] = []
-            for shade in row:
-                r, g, b = DMG_GRAYSCALE[shade & 0x03]
+            for pixel in row:
+                r, g, b = framebuffer_pixel_to_rgb(pixel)
                 pixels.append(f"{r} {g} {b}")
             lines.append(" ".join(pixels))
         return "\n".join(lines) + "\n"
@@ -1743,8 +1779,8 @@ class PPU:
 
         padding = b"\x00" * (row_stride - SCREEN_WIDTH * 3)
         for row in reversed(self.framebuffer):
-            for shade in row:
-                red, green, blue = DMG_GRAYSCALE[shade & 0x03]
+            for pixel in row:
+                red, green, blue = framebuffer_pixel_to_rgb(pixel)
                 data.extend((blue, green, red))
             data.extend(padding)
         return bytes(data)
@@ -1844,7 +1880,8 @@ class PPU:
             tile_id = (tile_id & 0xFE) | ((sprite_row // 8) & 0x01)
         tile_y = sprite_row % 8
         address = (tile_id & 0xFF) * 16 + tile_y * 2 + byte_index
-        return self.bus.vram[address & 0x1FFF]
+        bank_base = 0x2000 if self.bus.cgb_mode and attrs & CGB_ATTR_VRAM_BANK else 0
+        return self.bus.vram[bank_base + (address & 0x1FFF)]
 
     def _sprite_byte_lcdc(self, sprite_x: int, byte_offset: int, fetch_delay: int) -> int:
         # Left-clipped OBJ fetches are already in flight when x=0 LCDC writes land.
@@ -1864,6 +1901,18 @@ class PPU:
     ) -> None:
         bg_map_base = 0x1C00 if state.lcdc & LCDC_BG_TILEMAP else 0x1800
         scx = self._line_scx(state)
+        if self.bus.cgb_mode:
+            self._render_cgb_background_line(
+                state,
+                y,
+                row,
+                bg_color_ids,
+                start_x,
+                end_x,
+                bg_map_base,
+                scx,
+            )
+            return
         if self._can_fast_render_tilemap():
             self._render_background_line_fast(
                 state,
@@ -1906,6 +1955,18 @@ class PPU:
         reactivation_glitch_x = (
             self._line_window_reactivation_glitch_x if state.wx in {4, 5} else None
         )
+        if self.bus.cgb_mode:
+            self._render_cgb_window_line(
+                state,
+                row,
+                bg_color_ids,
+                start_x,
+                end_x,
+                window_map_base,
+                wx,
+                reactivation_glitch_x,
+            )
+            return
         if reactivation_glitch_x is None and self._can_fast_render_tilemap():
             self._render_window_line_fast(
                 state,
@@ -1936,6 +1997,63 @@ class PPU:
                 )
             bg_color_ids[x] = color_id
             row[x] = self._map_dmg_palette(state.bgp, color_id)
+
+    def _render_cgb_background_line(
+        self,
+        state: PPURenderState,
+        y: int,
+        row: list[int],
+        bg_color_ids: list[int],
+        start_x: int,
+        end_x: int,
+        map_base: int,
+        scx: int,
+    ) -> None:
+        if self.profile_enabled:
+            self._profile_bg_slow_pixels += end_x - start_x
+        for screen_x in range(start_x, end_x):
+            bg_x = (screen_x + scx) & 0xFF
+            bg_y = (y + state.scy) & 0xFF
+            color_id, pixel = self._cgb_tilemap_pixel(
+                state.lcdc,
+                map_base,
+                bg_x,
+                bg_y,
+                screen_x=screen_x,
+            )
+            bg_color_ids[screen_x] = color_id
+            row[screen_x] = pixel
+
+    def _render_cgb_window_line(
+        self,
+        state: PPURenderState,
+        row: list[int],
+        bg_color_ids: list[int],
+        start_x: int,
+        end_x: int,
+        map_base: int,
+        wx: int,
+        reactivation_glitch_x: int | None,
+    ) -> None:
+        if self.profile_enabled:
+            self._profile_window_slow_pixels += end_x - start_x
+        for screen_x in range(start_x, end_x):
+            if screen_x == reactivation_glitch_x:
+                color_id = 0
+                pixel = self._map_cgb_bg_palette(0, color_id)
+            else:
+                window_x = screen_x - wx
+                if reactivation_glitch_x is not None and screen_x > reactivation_glitch_x:
+                    window_x -= 1
+                color_id, pixel = self._cgb_tilemap_pixel(
+                    state.lcdc,
+                    map_base,
+                    window_x,
+                    state.window_line,
+                    screen_x=screen_x,
+                )
+            bg_color_ids[screen_x] = color_id
+            row[screen_x] = pixel
 
     def _can_fast_render_tilemap(self) -> bool:
         return (
@@ -2153,13 +2271,20 @@ class PPU:
                 attrs,
                 1,
             )
-            palette = state.obp1 if attrs & OBJ_DMG_PALETTE else state.obp0
-            shades = (
-                palette & 0x03,
-                (palette >> 2) & 0x03,
-                (palette >> 4) & 0x03,
-                (palette >> 6) & 0x03,
-            )
+            if self.bus.cgb_mode:
+                palette_index = attrs & CGB_ATTR_PALETTE_MASK
+                shades = tuple(
+                    self._map_cgb_obj_palette(palette_index, color_id)
+                    for color_id in range(4)
+                )
+            else:
+                palette = state.obp1 if attrs & OBJ_DMG_PALETTE else state.obp0
+                shades = (
+                    palette & 0x03,
+                    (palette >> 2) & 0x03,
+                    (palette >> 4) & 0x03,
+                    (palette >> 6) & 0x03,
+                )
             prepared_sprites.append((sprite_x, sprite_x + 8, attrs, lo, hi, shades))
 
         claimed = [False] * (end_x - start_x)
@@ -2226,6 +2351,41 @@ class PPU:
             y % 8,
             source_override,
         )
+
+    def _cgb_tilemap_pixel(
+        self,
+        lcdc: int,
+        map_base: int,
+        x: int,
+        y: int,
+        *,
+        screen_x: int | None = None,
+    ) -> tuple[int, int]:
+        needs_tile_x = screen_x is not None and bool(self._line_bg_tile_map_scy)
+        tile_x = self._bg_tile_screen_x(screen_x) if needs_tile_x else None
+        map_y = y
+        if tile_x is not None and self._line_bg_tile_map_scy:
+            map_scy = self._line_bg_tile_map_scy.get(tile_x)
+            if map_scy is not None:
+                map_y = (self._scanline + map_scy) & 0xFF
+
+        tile_map_index = map_base + ((map_y & 0xFF) // 8) * 32 + ((x & 0xFF) // 8)
+        tile_id = self.bus.vram[tile_map_index]
+        attrs = self.bus.vram[0x2000 + tile_map_index]
+        tile_x_pixel = x & 0x07
+        tile_y_pixel = map_y & 0x07
+        if attrs & CGB_ATTR_X_FLIP:
+            tile_x_pixel = 7 - tile_x_pixel
+        if attrs & CGB_ATTR_Y_FLIP:
+            tile_y_pixel = 7 - tile_y_pixel
+
+        tile_address = self._tile_data_address(lcdc, tile_id, tile_y_pixel)
+        bank_base = 0x2000 if attrs & CGB_ATTR_VRAM_BANK else 0
+        lo = self.bus.vram[bank_base + (tile_address & 0x1FFF)]
+        hi = self.bus.vram[bank_base + ((tile_address + 1) & 0x1FFF)]
+        bit = 7 - tile_x_pixel
+        color_id = ((hi >> bit) & 1) << 1 | ((lo >> bit) & 1)
+        return color_id, self._map_cgb_bg_palette(attrs & CGB_ATTR_PALETTE_MASK, color_id)
 
     def _tile_pixel_with_byte_sources_and_rows(
         self,
@@ -2765,7 +2925,7 @@ class PPU:
         ):
             return
         bg_color_ids[glitch_x] = 0
-        row[glitch_x] = self._map_dmg_palette(state.bgp, 0)
+        row[glitch_x] = self._map_bg_palette(state.bgp, 0, 0)
 
     def _apply_window_enable_cancel_glitch(
         self,
@@ -2779,7 +2939,7 @@ class PPU:
         if glitch_x is None or not start_x <= glitch_x < end_x:
             return
         bg_color_ids[glitch_x] = 0
-        row[glitch_x] = self._map_dmg_palette(state.bgp, 0)
+        row[glitch_x] = self._map_bg_palette(state.bgp, 0, 0)
 
     def _visible_pixels_emitted(self) -> int:
         if self._line_render_state is None:
@@ -2974,6 +3134,22 @@ class PPU:
     @staticmethod
     def _map_dmg_palette(palette: int, color_id: int) -> int:
         return (palette >> (color_id * 2)) & 0x03
+
+    def _map_bg_palette(self, dmg_palette: int, cgb_palette: int, color_id: int) -> int:
+        if self.bus.cgb_mode:
+            return self._map_cgb_bg_palette(cgb_palette, color_id)
+        return self._map_dmg_palette(dmg_palette, color_id)
+
+    def _map_cgb_bg_palette(self, palette_index: int, color_id: int) -> int:
+        return self._map_cgb_palette(self.bus.bg_palette_ram, palette_index, color_id)
+
+    def _map_cgb_obj_palette(self, palette_index: int, color_id: int) -> int:
+        return self._map_cgb_palette(self.bus.obj_palette_ram, palette_index, color_id)
+
+    @staticmethod
+    def _map_cgb_palette(palette_ram: bytearray, palette_index: int, color_id: int) -> int:
+        offset = ((palette_index & 0x07) * 8) + ((color_id & 0x03) * 2)
+        return _rgb555_to_framebuffer_pixel(palette_ram[offset], palette_ram[offset + 1])
 
     def _clear_framebuffer(self) -> None:
         for y in range(SCREEN_HEIGHT):

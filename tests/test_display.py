@@ -18,6 +18,7 @@ from display import (
     framebuffer_to_tk_ppm_data,
     framebuffer_to_tk_rows,
 )
+from ppu import rgb_to_framebuffer_pixel
 
 
 class FakeEvent:
@@ -205,6 +206,13 @@ class DisplayTests(unittest.TestCase):
 
         self.assertEqual(rows, ["{#ffffff #aaaaaa #555555 #000000}"])
 
+    def test_framebuffer_rows_map_rgb_pixels_to_tk_colors(self) -> None:
+        rows = framebuffer_to_tk_rows(
+            [[rgb_to_framebuffer_pixel(0, 0, 0), rgb_to_framebuffer_pixel(12, 34, 56)]]
+        )
+
+        self.assertEqual(rows, ["{#000000 #0c2238}"])
+
     def test_framebuffer_rows_can_be_scaled_for_tk_photoimage(self) -> None:
         rows = framebuffer_to_tk_rows([[0, 3], [1, 2]], scale=2)
 
@@ -240,6 +248,13 @@ class DisplayTests(unittest.TestCase):
             b"\xff\xff\xff\x00\x00\x00"
             b"\xaa\xaa\xaa\x55\x55\x55",
         )
+
+    def test_framebuffer_ppm_data_uses_binary_rgb_pixels(self) -> None:
+        data = framebuffer_to_tk_ppm_data(
+            [[rgb_to_framebuffer_pixel(0, 0, 0), rgb_to_framebuffer_pixel(12, 34, 56)]]
+        )
+
+        self.assertEqual(data, b"P6\n2 1\n255\n\x00\x00\x00\x0c\x22\x38")
 
     def test_display_config_validation(self) -> None:
         self.assertEqual(DisplayConfig(scale=2).scale, 2)
