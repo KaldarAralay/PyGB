@@ -6,6 +6,8 @@ from PIL import Image
 
 from ppu import SCREEN_HEIGHT, SCREEN_WIDTH
 from scripts.verify_crystal_cgb_oracle import (
+    ORACLE_SCENARIOS,
+    classify_stage_mismatch,
     classify_visible_mismatch,
     compare_rgb_images,
     compare_source_states,
@@ -97,6 +99,13 @@ class CrystalCgbOracleTests(unittest.TestCase):
     def test_parse_source_debug_checkpoints_accepts_none_and_lists(self) -> None:
         self.assertEqual(parse_source_debug_checkpoints("none"), set())
         self.assertEqual(parse_source_debug_checkpoints("3600, 4800"), {3600, 4800})
+        self.assertEqual(
+            parse_source_debug_checkpoints(
+                None,
+                ORACLE_SCENARIOS["dynamic"].source_debug_checkpoints,
+            ),
+            set(ORACLE_SCENARIOS["dynamic"].checkpoint_frames),
+        )
 
     def test_compare_source_states_confirms_non_suspects_and_vram_drift(self) -> None:
         def state() -> dict:
@@ -161,6 +170,59 @@ class CrystalCgbOracleTests(unittest.TestCase):
             ),
             "bg_window_coverage",
         )
+
+    def test_classify_stage_mismatch_prefers_palette_when_palette_ram_differs(self) -> None:
+        stage = {
+            "diff": {"diff_pixels": 1},
+            "source_debug": {
+                "visible_mismatch_class": "color_priority_or_timing",
+                "state_compare": {
+                    "non_suspects": {
+                        "bg_palette_ram_equal": False,
+                        "obj_palette_ram_equal": True,
+                        "bank1_attribute_maps_equal": True,
+                        "oam_equal": True,
+                        "stable_lcdc_scroll_window_registers_equal": True,
+                    },
+                    "vram_sections": {},
+                    "register_values": {"FF55": {"equal": True}},
+                },
+            },
+        }
+
+        self.assertEqual(classify_stage_mismatch(stage), "palette")
+
+    def test_classify_stage_mismatch_reports_bg_window_tilemap(self) -> None:
+        stage = {
+            "diff": {"diff_pixels": 1},
+            "source_debug": {
+                "visible_mismatch_class": "bg_window_coverage",
+                "state_compare": {
+                    "non_suspects": {
+                        "bg_palette_ram_equal": True,
+                        "obj_palette_ram_equal": True,
+                        "bank1_attribute_maps_equal": True,
+                        "oam_equal": True,
+                        "stable_lcdc_scroll_window_registers_equal": True,
+                    },
+                    "vram_sections": {
+                        "bank0_bg_map_9800": {"equal": False},
+                        "bank0_bg_map_9c00": {"equal": True},
+                        "bank0_tiledata": {"equal": True},
+                    },
+                    "register_values": {"FF55": {"equal": True}},
+                },
+            },
+        }
+
+        self.assertEqual(classify_stage_mismatch(stage), "bg_window_tilemap")
+
+    def test_dynamic_scenario_keeps_static_lock_frames(self) -> None:
+        dynamic = ORACLE_SCENARIOS["dynamic"]
+
+        self.assertTrue({2400, 3600, 4800}.issubset(dynamic.checkpoint_frames))
+        self.assertIn("down", dynamic.button_script or "")
+        self.assertIn("up", dynamic.button_script or "")
 
     def test_evaluate_oracle_stage_rejects_pyboy_blank_and_major_diff(self) -> None:
         stage = {

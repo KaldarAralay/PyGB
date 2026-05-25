@@ -167,7 +167,7 @@ Run the full unit suite:
 Latest full suite result:
 
 ```text
-Ran 402 tests in 0.625s
+Ran 405 tests in 0.608s
 OK
 ```
 
@@ -228,7 +228,13 @@ Run the Pokemon Crystal CGB PyBoy visual oracle:
 python -B scripts\verify_crystal_cgb_oracle.py --output-dir qa-output\crystal-cgb-pyboy-oracle --json-output qa-output\crystal-cgb-pyboy-oracle.json
 ```
 
-The oracle runs GBemu and PyBoy in CGB mode at 60, 600, 2400, 3600, and a scripted 4800-frame title/menu checkpoint using the same `frame:buttons[:duration]` input-script format. It advances GBemu by wall-frame CPU-cycle targets instead of raw `ppu.frame_count`, because Crystal can disable LCD and stall display-frame counting during transitions. It writes GBemu, PyBoy, amplified diff, and targeted crop PNGs for each checkpoint plus JSON containing diff pixels, major-diff pixels, max color delta, unique color counts, nonblack coverage/bounds, palette/DMA/KEY1/CGB-attribute metrics, and per-stage pass/fail status. Frame 3600 also includes source-debug JSON by default, classifying pixels as BG/window/OBJ with tile id, attr byte, palette, color id, priority, visible mismatch class, source-state class, and compact mismatch samples. The current threshold is intentionally tolerant because CGB FIFO/timing and broader visual behavior are not pixel-perfect yet; exact diff counts are evidence, not a compatibility claim.
+Run the dynamic Crystal CGB PyBoy oracle:
+
+```powershell
+python -B scripts\verify_crystal_cgb_oracle.py --scenario dynamic --output-dir qa-output\crystal-cgb-pyboy-oracle-dynamic --json-output qa-output\crystal-cgb-pyboy-oracle-dynamic.json
+```
+
+The oracle runs GBemu and PyBoy in CGB mode using named scenarios and the same `frame:buttons[:duration]` input-script format. The static scenario checks 60, 600, 2400, 3600, and a scripted 4800-frame title/menu checkpoint. The dynamic scenario keeps the 2400/3600/4800 static locks and adds title animation/palette, logo transition, gender-menu text, explicit cursor-down/cursor-up movement, dialog transition/text, clock menu, and confirmation-menu checkpoints through frame 7800. GBemu advances by wall-frame CPU-cycle targets instead of raw `ppu.frame_count`, because Crystal can disable LCD and stall display-frame counting during transitions. The JSON contains diff pixels, major-diff pixels, max color delta, unique color counts, nonblack coverage/bounds, palette/DMA/KEY1/CGB-attribute metrics, per-stage pass/fail status, scenario labels, and mismatch class. Source-debug checkpoints classify pixels as BG/window/OBJ with tile id, attr byte, palette, color id, priority, visible mismatch class, source-state class, and compact mismatch samples. The current threshold is intentionally tolerant because CGB FIFO/timing and broader visual behavior are not pixel-perfect yet; exact diff counts are evidence, not a compatibility claim.
 
 Run the Pokemon Red PyBoy visual/OAM oracles:
 
@@ -266,10 +272,10 @@ Latest sprite-scene oracle and performance-gate evidence:
 - Oak's Lab encyclopedia crop: `diff_pixels=0`; OAM tiles `7C 7D 7E 7F 7C 7D 7E 7F`.
 - Sprite-heavy saved-game scene: full-screen `diff_pixels=0`; 28 visible OAM entries match PyBoy for y, x, tile, and attributes.
 - Blargg `dmg_sound`: all 12 single ROMs pass in the default lane, including the CH3 wave-RAM edge cases.
-- Performance gate: text `run_fps=86.10`; sprites `run_fps=69.92`; sprites with headless audio output `run_fps=59.59`, `apu_dropped_samples=0`.
-- Super Mario Land action gate: headless action `run_fps=73.92`; action with headless audio output `run_fps=63.44`, `apu_dropped_samples=0`. Latest live action capture checked 10 non-startup profile windows with min `wall_fps=46.84`, min queue `33.5 ms`, and zero audio underruns/drops.
+- Performance gate: text `run_fps=83.96`; sprites `run_fps=68.29`; sprites with headless audio output `run_fps=58.93`, `apu_dropped_samples=0`.
+- Super Mario Land action gate: headless action `run_fps=72.91`; action with headless audio output `run_fps=62.76`, `apu_dropped_samples=0`. Latest live action capture checked 10 non-startup profile windows with min `wall_fps=46.84`, min queue `33.5 ms`, and zero audio underruns/drops.
 - CGB foundation/render smoke: synthetic header/mode/register checks pass for CGB detection, DMG inert behavior, forced CGB-only startup, VRAM/WRAM bank selects, CGB palettes with mode-3 data access blocking, OPRI, GDMA/HDMA, and KEY1 STOP-triggered double-speed switching. Synthetic double-speed checks verify TIMA/serial/OAM DMA stay on the CPU-speed domain while PPU/APU/HDMA stay on the normal-speed device domain. Local Pokemon Crystal smoke detects `CGB only ($C0)`, default `Mode: CGB`, `--mode auto` `Mode: CGB`, CPU `A=$11`, and a staged 60/600/2400/3600-frame CGB render gate. Latest staged evidence: 60 frames has 3 unique RGB colors, 32 HDMA blocks / 512 VRAM-DMA bytes, and no KEY1 arm/toggle; 600 frames is a solid transition frame with nonzero palettes and CGB mode; 2400 frames has 6 unique RGB colors, 607 nonzero attrs, 448 bank attrs, 448 X-flip attrs, and 448 Y-flip attrs; 3600 frames has 18 unique RGB colors, 832 nonzero attrs, 576 bank attrs, 384 X-flip attrs, and 384 Y-flip attrs. Synthetic CGB renderer checks also cover OBJ palette selection, OBJ tile VRAM-bank selection, OAM-order priority, OPRI DMG-style priority, BG priority attributes, and LCDC.0 priority behavior.
-- Crystal PyBoy CGB visual oracle: staged 60/600/2400/3600/4800 wall-frame comparison passes with 30 PNG artifacts, including targeted crops. The frame-3600 visible coverage mismatch was traced to bank-0 BG tilemap transfer timing caused by CPU fast WRAM helpers bypassing the selected CGB WRAM bank for `$D000-$DFFF` and echo RAM. With the WRAM fast-path fixed, current exact diff ratios are: frame 60 `diff_ratio=1.0000`, frame 600 `0.0174`, frame 2400 `0.0000`, frame 3600 `0.0000`, frame 4800 `0.0000`; major-diff ratios are `0.0000`, `0.0174`, `0.0000`, `0.0000`, and `0.0000`. Nonblack coverage deltas are `1.0000`, `0.4577`, `0.0000`, `0.0000`, and `0.0000`; frame 60 is treated as a startup/LCD-transition sample. Frame-3600 source-debug now reports `visible_mismatch_class=none` with `source_state_class=bank0_vram_tiledata_or_bg_map_timing`: OAM, LCDC/SCX/SCY/WX/WY, palette RAM, and bank-1 attr maps match PyBoy, while an invisible bank-0 `9800` tilemap drift remains at 48 bytes.
+- Crystal PyBoy CGB visual oracle: static 60/600/2400/3600/4800 wall-frame comparison passes with 30 PNG artifacts, including targeted crops. Dynamic `--scenario dynamic` now adds 11 title animation, menu movement, text, clock, and confirmation checkpoints through frame 7800; all 11 current dynamic checkpoints have `diff_ratio=0.0000`, `major_diff_ratio=0.0000`, `nonblack_delta_ratio=0.0000`, `visible_mismatch_class=none`, and `mismatch_class=none`. The static wins remain locked at frames 2400, 3600, and 4800. Frame-3600 source-debug still reports `source_state_class=bank0_vram_tiledata_or_bg_map_timing` with an invisible bank-0 `9800` tilemap drift, but no visible mismatch.
 
 Verify headless/live WAV identity for a fixed Pokemon Red run:
 

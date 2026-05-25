@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,45 @@ DEFAULT_CHECKPOINT_FRAMES = (60, 600, 2400, 3600, 4800)
 DEFAULT_BUTTON_SCRIPT = "3900:start:20,4300:a:20"
 DEFAULT_OUTPUT_DIR = ROOT / "qa-output" / "crystal-cgb-pyboy-oracle"
 DEFAULT_SOURCE_DEBUG_CHECKPOINTS = (3600,)
+CRYSTAL_DYNAMIC_CHECKPOINT_FRAMES = (
+    2400,
+    3000,
+    3600,
+    4800,
+    4920,
+    5040,
+    5400,
+    6000,
+    6600,
+    7200,
+    7800,
+)
+CRYSTAL_DYNAMIC_BUTTON_SCRIPT = (
+    "3900:start:20,"
+    "4300:a:20,"
+    "4880:down:15,"
+    "5000:up:15,"
+    "5120:a:15,"
+    "5500:a:10,"
+    "5900:a:10,"
+    "6300:a:10,"
+    "6700:a:10,"
+    "7100:a:10,"
+    "7500:a:10"
+)
+CRYSTAL_DYNAMIC_STAGE_LABELS = {
+    2400: "title-animation-palette",
+    3000: "logo-animation-transition",
+    3600: "static-title-lock",
+    4800: "gender-menu-text",
+    4920: "gender-menu-cursor-down",
+    5040: "gender-menu-cursor-up",
+    5400: "dialog-transition",
+    6000: "intro-dialog-text",
+    6600: "clock-day-menu",
+    7200: "clock-minute-menu",
+    7800: "clock-confirmation-menu",
+}
 DEFAULT_MAJOR_DELTA_THRESHOLD = 224
 DEFAULT_MAX_MAJOR_DIFF_RATIO = 0.95
 DEFAULT_MAX_NONBLACK_DELTA_RATIO = 0.98
@@ -59,24 +99,66 @@ LCDC_OBJ_SIZE = 0x04
 LCDC_OBJ_ENABLE = 0x02
 
 
+@dataclass(frozen=True)
+class OracleScenario:
+    name: str
+    description: str
+    checkpoint_frames: tuple[int, ...]
+    button_script: str | None
+    source_debug_checkpoints: tuple[int, ...]
+    stage_labels: dict[int, str]
+
+
+ORACLE_SCENARIOS = {
+    "static": OracleScenario(
+        name="static",
+        description="Static title/menu checkpoints that lock the current Crystal baseline.",
+        checkpoint_frames=DEFAULT_CHECKPOINT_FRAMES,
+        button_script=DEFAULT_BUTTON_SCRIPT,
+        source_debug_checkpoints=DEFAULT_CHECKPOINT_FRAMES,
+        stage_labels={
+            2400: "title-animation-palette",
+            3600: "static-title-lock",
+            4800: "title-menu-start",
+        },
+    ),
+    "dynamic": OracleScenario(
+        name="dynamic",
+        description=(
+            "Title animation, gender-menu cursor movement, intro text, clock menu, "
+            "and confirmation-menu checkpoints."
+        ),
+        checkpoint_frames=CRYSTAL_DYNAMIC_CHECKPOINT_FRAMES,
+        button_script=CRYSTAL_DYNAMIC_BUTTON_SCRIPT,
+        source_debug_checkpoints=CRYSTAL_DYNAMIC_CHECKPOINT_FRAMES,
+        stage_labels=CRYSTAL_DYNAMIC_STAGE_LABELS,
+    ),
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compare staged Pokemon Crystal CGB RGB frames against PyBoy."
     )
     parser.add_argument("--rom", type=Path, default=ROOT / "roms" / "crystal.gbc")
     parser.add_argument(
+        "--scenario",
+        choices=sorted(ORACLE_SCENARIOS),
+        default="static",
+        help="Named checkpoint/input scenario. Explicit checkpoint or button-script args override it.",
+    )
+    parser.add_argument(
         "--checkpoint-frames",
         help=(
-            "Comma or space separated checkpoint frames. Defaults to "
+            "Comma or space separated checkpoint frames. Defaults to the selected scenario, "
+            "or the static baseline "
             f"{','.join(str(frame) for frame in DEFAULT_CHECKPOINT_FRAMES)}."
         ),
     )
     parser.add_argument(
         "--button-script",
-        default=DEFAULT_BUTTON_SCRIPT,
         help=(
-            "Inline frame:buttons[:duration] script. Defaults to a small "
-            "late title/menu progression script."
+            "Inline frame:buttons[:duration] script. Defaults to the selected scenario script."
         ),
     )
     parser.add_argument(
@@ -132,10 +214,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--source-debug-checkpoints",
-        default=",".join(str(frame) for frame in DEFAULT_SOURCE_DEBUG_CHECKPOINTS),
         help=(
             "Comma or space separated checkpoints where source-map debug summaries "
-            "are added to JSON. Use 'none' to disable. Defaults to 3600."
+            "are added to JSON. Use 'none' to disable. Defaults to the selected scenario."
         ),
     )
     parser.add_argument("--print-json", action="store_true")
@@ -143,22 +224,30 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_oracle_button_script(args: argparse.Namespace) -> ButtonScript | None:
+    scenario = ORACLE_SCENARIOS[args.scenario]
     if args.no_button_script:
         if args.button_script_path is not None:
             raise ValueError("use either --no-button-script or --button-script-path")
+        if args.button_script is not None:
+            raise ValueError("use either --no-button-script or --button-script")
         return None
-    if args.button_script and args.button_script_path is not None:
+    if args.button_script is not None and args.button_script_path is not None:
         raise ValueError("use either --button-script or --button-script-path, not both")
     if args.button_script_path is not None:
         return load_button_script(args.button_script_path)
-    if args.button_script:
+    if args.button_script is not None:
         return parse_button_script(args.button_script)
+    if scenario.button_script:
+        return parse_button_script(scenario.button_script)
     return None
 
 
-def parse_source_debug_checkpoints(value: str | None) -> set[int]:
+def parse_source_debug_checkpoints(
+    value: str | None,
+    default_frames: tuple[int, ...] = DEFAULT_SOURCE_DEBUG_CHECKPOINTS,
+) -> set[int]:
     if value is None:
-        return set(DEFAULT_SOURCE_DEBUG_CHECKPOINTS)
+        return set(default_frames)
     stripped = value.strip()
     if not stripped or stripped.lower() in {"none", "off", "false", "0"}:
         return set()
@@ -802,6 +891,47 @@ def classify_visible_mismatch(
     return "color_priority_or_timing"
 
 
+def classify_stage_mismatch(stage: dict[str, Any]) -> str:
+    diff = stage.get("diff", {})
+    if int(diff.get("diff_pixels", 1)) == 0:
+        return "none"
+
+    source_debug = stage.get("source_debug")
+    if not source_debug:
+        return "unclassified_no_source_debug"
+
+    state_compare = source_debug.get("state_compare", {})
+    non_suspects = state_compare.get("non_suspects", {})
+    vram_sections = state_compare.get("vram_sections", {})
+    registers = state_compare.get("register_values", {})
+    visible = source_debug.get("visible_mismatch_class")
+
+    if not non_suspects.get("bg_palette_ram_equal", True) or not non_suspects.get(
+        "obj_palette_ram_equal",
+        True,
+    ):
+        return "palette"
+    if not non_suspects.get("bank1_attribute_maps_equal", True) or not vram_sections.get(
+        "bank1_tiledata",
+        {},
+    ).get("equal", True):
+        return "cgb_attr"
+    if visible == "obj_coverage" or not non_suspects.get("oam_equal", True):
+        return "obj_priority"
+    if not registers.get("FF55", {}).get("equal", True):
+        return "hdma_timing"
+    if not non_suspects.get("stable_lcdc_scroll_window_registers_equal", True):
+        return "window_timing"
+    if visible == "bg_window_coverage" or not vram_sections.get(
+        "bank0_bg_map_9800",
+        {},
+    ).get("equal", True) or not vram_sections.get("bank0_bg_map_9c00", {}).get("equal", True):
+        return "bg_window_tilemap"
+    if not vram_sections.get("bank0_tiledata", {}).get("equal", True):
+        return "vram_bank"
+    return "fifo_timing"
+
+
 def build_source_debug(
     *,
     gbemu_state: dict[str, Any],
@@ -1005,13 +1135,17 @@ def run_pyboy_stages(
 
 
 def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
+    scenario = ORACLE_SCENARIOS[args.scenario]
     checkpoint_frames = (
-        list(DEFAULT_CHECKPOINT_FRAMES)
+        list(scenario.checkpoint_frames)
         if args.checkpoint_frames is None
         else parse_checkpoint_frames(args.checkpoint_frames)
     )
     button_script = load_oracle_button_script(args)
-    source_debug_checkpoints = parse_source_debug_checkpoints(args.source_debug_checkpoints)
+    source_debug_checkpoints = parse_source_debug_checkpoints(
+        args.source_debug_checkpoints,
+        default_frames=scenario.source_debug_checkpoints,
+    )
 
     gbemu_stages = run_gbemu_stages(
         rom=args.rom,
@@ -1059,6 +1193,7 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
         )
         stage = {
             "checkpoint": checkpoint,
+            "scenario_stage": scenario.stage_labels.get(checkpoint),
             "stage": gbemu_stage["metrics"]["stage"],
             "gbemu": gbemu_stage["metrics"],
             "gbemu_image": image_metrics(gbemu_image),
@@ -1078,6 +1213,7 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
                     gbemu_image=gbemu_image,
                     pyboy_image=pyboy_image,
                 )
+        stage["mismatch_class"] = classify_stage_mismatch(stage)
         stage_failures = evaluate_oracle_stage(
             stage,
             min_pyboy_unique_rgb_colors=args.min_pyboy_unique_rgb_colors,
@@ -1093,6 +1229,8 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "status": "pass" if not failures else "fail",
         "failures": failures,
+        "scenario": scenario.name,
+        "scenario_description": scenario.description,
         "rom": str(args.rom),
         "checkpoint_frames": checkpoint_frames,
         "source_debug_checkpoints": sorted(source_debug_checkpoints),
@@ -1103,12 +1241,18 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
                 str(args.button_script_path)
                 if args.button_script_path is not None
                 else args.button_script
+                if args.button_script is not None
+                else scenario.button_script
             )
         ),
         "button_script_source": (
             None
             if button_script is None
-            else "path" if args.button_script_path is not None else "inline"
+            else "path"
+            if args.button_script_path is not None
+            else "inline"
+            if args.button_script is not None
+            else "scenario"
         ),
         "button_script_final_frame": None if button_script is None else button_script.final_frame,
         "thresholds": {
