@@ -7,6 +7,7 @@ from PIL import Image
 from ppu import SCREEN_HEIGHT, SCREEN_WIDTH
 from scripts.verify_crystal_cgb_oracle import (
     ORACLE_SCENARIOS,
+    DEFAULT_CRYSTAL_SAVE_FILE,
     classify_stage_mismatch,
     classify_visible_mismatch,
     compare_rgb_images,
@@ -14,6 +15,7 @@ from scripts.verify_crystal_cgb_oracle import (
     evaluate_oracle_stage,
     image_metrics,
     parse_source_debug_checkpoints,
+    resolve_oracle_save_file,
     stage_requires_color_variety,
 )
 
@@ -223,6 +225,27 @@ class CrystalCgbOracleTests(unittest.TestCase):
         self.assertTrue({2400, 3600, 4800}.issubset(dynamic.checkpoint_frames))
         self.assertIn("down", dynamic.button_script or "")
         self.assertIn("up", dynamic.button_script or "")
+
+    def test_overworld_scenario_uses_saved_game_fixture(self) -> None:
+        overworld = ORACLE_SCENARIOS["overworld"]
+
+        self.assertEqual(overworld.save_file, DEFAULT_CRYSTAL_SAVE_FILE)
+        self.assertGreater(overworld.attribute_checkpoint_frame, max(overworld.checkpoint_frames))
+        self.assertEqual(set(overworld.source_debug_checkpoints), set(overworld.checkpoint_frames))
+        self.assertIn("left", overworld.button_script or "")
+        self.assertIn("down", overworld.button_script or "")
+        self.assertIn("start", overworld.button_script or "")
+        self.assertIn("overworld-text-box", overworld.stage_labels.values())
+
+    def test_resolve_oracle_save_file_prefers_explicit_path(self) -> None:
+        class Args:
+            save_file = DEFAULT_CRYSTAL_SAVE_FILE.with_name("override.sav")
+            no_save_file = False
+
+        save_file, source = resolve_oracle_save_file(Args(), ORACLE_SCENARIOS["overworld"])
+
+        self.assertEqual(save_file, DEFAULT_CRYSTAL_SAVE_FILE.with_name("override.sav"))
+        self.assertEqual(source, "arg")
 
     def test_evaluate_oracle_stage_rejects_pyboy_blank_and_major_diff(self) -> None:
         stage = {

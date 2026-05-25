@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 from collections import Counter
@@ -38,6 +39,7 @@ DEFAULT_CHECKPOINT_FRAMES = (60, 600, 2400, 3600, 4800)
 DEFAULT_BUTTON_SCRIPT = "3900:start:20,4300:a:20"
 DEFAULT_OUTPUT_DIR = ROOT / "qa-output" / "crystal-cgb-pyboy-oracle"
 DEFAULT_SOURCE_DEBUG_CHECKPOINTS = (3600,)
+DEFAULT_CRYSTAL_SAVE_FILE = ROOT / "saves" / "pokemon-crystal-test.sav"
 CRYSTAL_DYNAMIC_CHECKPOINT_FRAMES = (
     2400,
     3000,
@@ -77,6 +79,48 @@ CRYSTAL_DYNAMIC_STAGE_LABELS = {
     7200: "clock-minute-menu",
     7800: "clock-confirmation-menu",
 }
+CRYSTAL_OVERWORLD_CHECKPOINT_FRAMES = (
+    4800,
+    5400,
+    6000,
+    6600,
+    7200,
+    7800,
+    8400,
+    9000,
+    9600,
+    10200,
+    10800,
+    11400,
+)
+CRYSTAL_OVERWORLD_BUTTON_SCRIPT = (
+    "3900:start:20,"
+    "4300:a:20,"
+    "5200:a:15,"
+    "6000:left:24,"
+    "6600:left:24,"
+    "7200:down:24,"
+    "7800:start:45,"
+    "8400:b:30,"
+    "9000:a:40,"
+    "10000:a:20,"
+    "10800:b:30"
+)
+CRYSTAL_OVERWORLD_STAGE_LABELS = {
+    4800: "saved-game-summary",
+    5400: "overworld-entry",
+    6000: "overworld-object-screen",
+    6600: "overworld-left-movement",
+    7200: "overworld-npc-approach",
+    7800: "overworld-menu-trigger",
+    8400: "overworld-menu-open",
+    9000: "overworld-menu-close",
+    9600: "overworld-text-box",
+    10200: "overworld-text-advance",
+    10800: "overworld-text-held",
+    11400: "overworld-return",
+}
+CRYSTAL_OVERWORLD_ATTRIBUTE_CHECKPOINT_FRAME = 1_000_000
 DEFAULT_MAJOR_DELTA_THRESHOLD = 224
 DEFAULT_MAX_MAJOR_DIFF_RATIO = 0.95
 DEFAULT_MAX_NONBLACK_DELTA_RATIO = 0.98
@@ -107,6 +151,8 @@ class OracleScenario:
     button_script: str | None
     source_debug_checkpoints: tuple[int, ...]
     stage_labels: dict[int, str]
+    save_file: Path | None = None
+    attribute_checkpoint_frame: int = DEFAULT_ATTRIBUTE_CHECKPOINT_FRAME
 
 
 ORACLE_SCENARIOS = {
@@ -133,6 +179,19 @@ ORACLE_SCENARIOS = {
         source_debug_checkpoints=CRYSTAL_DYNAMIC_CHECKPOINT_FRAMES,
         stage_labels=CRYSTAL_DYNAMIC_STAGE_LABELS,
     ),
+    "overworld": OracleScenario(
+        name="overworld",
+        description=(
+            "Saved-game Crystal path covering overworld movement, object-heavy "
+            "screens, menu open/close, and a text box."
+        ),
+        checkpoint_frames=CRYSTAL_OVERWORLD_CHECKPOINT_FRAMES,
+        button_script=CRYSTAL_OVERWORLD_BUTTON_SCRIPT,
+        source_debug_checkpoints=CRYSTAL_OVERWORLD_CHECKPOINT_FRAMES,
+        stage_labels=CRYSTAL_OVERWORLD_STAGE_LABELS,
+        save_file=DEFAULT_CRYSTAL_SAVE_FILE,
+        attribute_checkpoint_frame=CRYSTAL_OVERWORLD_ATTRIBUTE_CHECKPOINT_FRAME,
+    ),
 }
 
 
@@ -141,6 +200,19 @@ def parse_args() -> argparse.Namespace:
         description="Compare staged Pokemon Crystal CGB RGB frames against PyBoy."
     )
     parser.add_argument("--rom", type=Path, default=ROOT / "roms" / "crystal.gbc")
+    parser.add_argument(
+        "--save-file",
+        type=Path,
+        help=(
+            "Battery RAM save file. Defaults to the selected scenario save fixture "
+            "when that scenario starts from saved game state."
+        ),
+    )
+    parser.add_argument(
+        "--no-save-file",
+        action="store_true",
+        help="Disable the selected scenario save fixture.",
+    )
     parser.add_argument(
         "--scenario",
         choices=sorted(ORACLE_SCENARIOS),
@@ -174,8 +246,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--attribute-checkpoint-frame",
         type=int,
-        default=DEFAULT_ATTRIBUTE_CHECKPOINT_FRAME,
-        help="First checkpoint where GBemu CGB tile attributes are required.",
+        help=(
+            "First checkpoint where GBemu CGB tile attributes are required. "
+            "Defaults to the selected scenario."
+        ),
     )
     parser.add_argument("--min-unique-rgb-colors", type=int, default=2)
     parser.add_argument("--min-pyboy-unique-rgb-colors", type=int, default=2)
@@ -240,6 +314,21 @@ def load_oracle_button_script(args: argparse.Namespace) -> ButtonScript | None:
     if scenario.button_script:
         return parse_button_script(scenario.button_script)
     return None
+
+
+def resolve_oracle_save_file(
+    args: argparse.Namespace,
+    scenario: OracleScenario,
+) -> tuple[Path | None, str | None]:
+    if args.no_save_file:
+        if args.save_file is not None:
+            raise ValueError("use either --no-save-file or --save-file")
+        return None, None
+    if args.save_file is not None:
+        return args.save_file, "arg"
+    if scenario.save_file is not None:
+        return scenario.save_file, "scenario"
+    return None, None
 
 
 def parse_source_debug_checkpoints(
@@ -1031,9 +1120,12 @@ def run_gbemu_stages(
     attribute_checkpoint_frame: int,
     min_unique_rgb_colors: int,
     source_debug_checkpoints: set[int],
+    save_file: Path | None,
 ) -> list[dict[str, Any]]:
     cartridge = Cartridge.from_file(rom)
     emulator = Emulator(cartridge, serial_sink=lambda _: None, mode="cgb")
+    if save_file is not None:
+        emulator.load_save_file(save_file)
     initial_key1 = emulator.bus.read8(0xFF4D)
     stages: list[dict[str, Any]] = []
     wall_frame = 0
@@ -1103,10 +1195,18 @@ def run_pyboy_stages(
     checkpoint_frames: list[int],
     button_script: ButtonScript | None,
     source_debug_checkpoints: set[int],
+    save_file: Path | None,
 ) -> dict[int, dict[str, Any]]:
     from pyboy import PyBoy
 
-    pyboy = PyBoy(str(rom), window="null", sound_emulated=False, cgb=True)
+    pyboy_kwargs: dict[str, Any] = {
+        "window": "null",
+        "sound_emulated": False,
+        "cgb": True,
+    }
+    if save_file is not None:
+        pyboy_kwargs["ram_file"] = io.BytesIO(save_file.read_bytes())
+    pyboy = PyBoy(str(rom), **pyboy_kwargs)
     pyboy.set_emulation_speed(0)
     checkpoints = set(checkpoint_frames)
     captures: dict[int, dict[str, Any]] = {}
@@ -1141,25 +1241,35 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
         if args.checkpoint_frames is None
         else parse_checkpoint_frames(args.checkpoint_frames)
     )
+    attribute_checkpoint_frame = (
+        scenario.attribute_checkpoint_frame
+        if args.attribute_checkpoint_frame is None
+        else args.attribute_checkpoint_frame
+    )
     button_script = load_oracle_button_script(args)
     source_debug_checkpoints = parse_source_debug_checkpoints(
         args.source_debug_checkpoints,
         default_frames=scenario.source_debug_checkpoints,
     )
+    save_file, save_file_source = resolve_oracle_save_file(args, scenario)
+    if save_file is not None and not save_file.exists():
+        raise ValueError(f"save file not found: {save_file}")
 
     gbemu_stages = run_gbemu_stages(
         rom=args.rom,
         checkpoint_frames=checkpoint_frames,
         button_script=button_script,
-        attribute_checkpoint_frame=args.attribute_checkpoint_frame,
+        attribute_checkpoint_frame=attribute_checkpoint_frame,
         min_unique_rgb_colors=args.min_unique_rgb_colors,
         source_debug_checkpoints=source_debug_checkpoints,
+        save_file=save_file,
     )
     pyboy_images = run_pyboy_stages(
         rom=args.rom,
         checkpoint_frames=checkpoint_frames,
         button_script=button_script,
         source_debug_checkpoints=source_debug_checkpoints,
+        save_file=save_file,
     )
 
     failures: list[str] = []
@@ -1189,7 +1299,7 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
         require_pyboy_color_variety = stage_requires_color_variety(
             checkpoint,
             checkpoint_frames,
-            attribute_checkpoint_frame=args.attribute_checkpoint_frame,
+            attribute_checkpoint_frame=attribute_checkpoint_frame,
         )
         stage = {
             "checkpoint": checkpoint,
@@ -1232,6 +1342,8 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
         "scenario": scenario.name,
         "scenario_description": scenario.description,
         "rom": str(args.rom),
+        "save_file": None if save_file is None else str(save_file),
+        "save_file_source": save_file_source,
         "checkpoint_frames": checkpoint_frames,
         "source_debug_checkpoints": sorted(source_debug_checkpoints),
         "button_script": (
@@ -1261,7 +1373,7 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
             "max_nonblack_delta_ratio": args.max_nonblack_delta_ratio,
             "min_unique_rgb_colors": args.min_unique_rgb_colors,
             "min_pyboy_unique_rgb_colors": args.min_pyboy_unique_rgb_colors,
-            "attribute_checkpoint_frame": args.attribute_checkpoint_frame,
+            "attribute_checkpoint_frame": attribute_checkpoint_frame,
         },
         "stages": stages,
     }
@@ -1271,7 +1383,7 @@ def main() -> int:
     args = parse_args()
     if not args.rom.exists():
         raise SystemExit(f"ROM not found: {args.rom}")
-    if args.attribute_checkpoint_frame < 1:
+    if args.attribute_checkpoint_frame is not None and args.attribute_checkpoint_frame < 1:
         raise SystemExit("--attribute-checkpoint-frame must be positive")
     if args.min_unique_rgb_colors < 1:
         raise SystemExit("--min-unique-rgb-colors must be positive")

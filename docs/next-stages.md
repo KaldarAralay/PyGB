@@ -1,16 +1,16 @@
 # GBemu Next Stages
 
-Date: 2026-05-24
+Date: 2026-05-25
 
 This document is the active roadmap. Historical Stage 1 CPU evidence is preserved in `docs\stage1-audit.md`; current compatibility evidence is in `docs\compatibility.md`; the Pan Docs subsystem inventory is in `docs\pandocs-inventory.md`.
 
 ## Current State
 
-GBemu is now a playable DMG-first emulator for the current primary real-ROM target, Pokemon Red, with Super Mario Land added as a quick early-action performance smoke target. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, rolling frame/audio profiling, and a minimal CGB foundation with forced CGB-only startup identity, KEY1 double-speed switching, CGB palette mode-3 data access blocking, Crystal first-frame/window-startup smoke coverage, staged Crystal CGB render-gate coverage, and a tolerant Crystal PyBoy visual oracle.
+GBemu is now a playable DMG-first emulator for the current primary real-ROM target, Pokemon Red, with Super Mario Land added as a quick early-action performance smoke target. It has a verified CPU core, common mapper support, strict selected PPU regression coverage, live Tkinter display, live Windows audio, deterministic WAV capture, rolling frame/audio profiling, and a minimal CGB foundation with forced CGB-only startup identity, KEY1 double-speed switching, CGB palette mode-3 data access blocking, Crystal first-frame/window-startup smoke coverage, staged Crystal CGB render-gate coverage, and tolerant static/dynamic/saved-game-overworld Crystal PyBoy visual oracles.
 
 The project is not cycle-perfect and not yet a broad commercial compatibility emulator. The strongest next work is to keep adding evidence while improving accuracy and tail-latency behavior.
 
-Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, functional audio, and CGB foundation startup/registers/banking/window ordering plus KEY1 double-speed switching, GDMA/HDMA, CGB palette mode-3 access behavior, first-pass BG/window palette/tile-attribute rendering, and OBJ palette/priority rendering are in place. The largest remaining gaps are full pixel FIFO completeness, stricter APU suite/analog accuracy, broader commercial compatibility, CGB boot behavior, exact CGB DMA/FIFO/speed-switch edge timing, and real link/SGB/peripheral behavior.
+Latest inventory update: the codebase has been compared against the major Pan Docs areas. Current DMG execution, common memory/cartridge behavior, selected PPU behavior, input, runtime, functional audio, and CGB foundation startup/registers/banking/window ordering plus KEY1 double-speed switching, GDMA/HDMA, CGB palette mode-3 access behavior, first-pass BG/window palette/tile-attribute rendering, OBJ palette/priority rendering, and saved-game Crystal gameplay oracle coverage are in place. The largest remaining gaps are full pixel FIFO completeness, stricter CGB color/palette accuracy, stricter APU suite/analog accuracy, broader commercial compatibility, CGB boot behavior, exact CGB DMA/FIFO/speed-switch edge timing, and real link/SGB/peripheral behavior.
 
 ## Completed Milestones
 
@@ -129,11 +129,11 @@ Done:
 - `scripts\verify_cgb_foundation.py` synthetic smoke verifier, including GDMA/HDMA data movement, KEY1 double-speed timing-domain checks, and a local Pokemon Crystal header/startup check when `roms\crystal.gbc` exists.
 - `scripts\verify_crystal_window_startup.py` headless/window smoke verifier, confirming Crystal reaches the first frame in CGB mode and Tk presents before first-frame emulation begins while reporting KEY1 speed-switch activity.
 - `scripts\verify_crystal_cgb_render.py` staged render verifier, including synthetic CGB BG palette/bank/flip checks, synthetic CGB OBJ palette/bank/priority checks, and Pokemon Crystal 60/600/2400/3600-frame checkpoints with JSON metrics, BMP dumps, required CGB VRAM-DMA activity, CGB tile-attribute assertions from 2400 frames onward, LCDC/STAT/LY capture, and KEY1 activity reporting.
-- `scripts\verify_crystal_cgb_oracle.py` PyBoy CGB visual oracle, comparing GBemu and PyBoy RGB frames in named `static` and `dynamic` scenarios while dumping GBemu/PyBoy/diff/crop PNGs and JSON diff plus nonblack structural metrics. The static scenario checks 60, 600, 2400, 3600, and scripted 4800-frame title/menu checkpoints. The dynamic scenario keeps the 2400/3600/4800 static locks and adds title animation/palette, logo transition, gender-menu text, cursor-down/cursor-up menu movement, dialog transition/text, clock menu, and confirmation-menu checkpoints through frame 7800. Source-debug classification includes BG/window/OBJ source, tile id, attr byte, palette, color id, priority, visible mismatch class, source-state class, sampled mismatches, and per-stage mismatch class.
+- `scripts\verify_crystal_cgb_oracle.py` PyBoy CGB visual oracle, comparing GBemu and PyBoy RGB frames in named `static`, `dynamic`, and `overworld` scenarios while dumping GBemu/PyBoy/diff/crop PNGs and JSON diff plus nonblack structural metrics. The static scenario checks 60, 600, 2400, 3600, and scripted 4800-frame title/menu checkpoints. The dynamic scenario keeps the 2400/3600/4800 static locks and adds title animation/palette, logo transition, gender-menu text, cursor-down/cursor-up menu movement, dialog transition/text, clock menu, and confirmation-menu checkpoints through frame 7800. The saved-game overworld scenario loads `saves\pokemon-crystal-test.sav`, enters a real map, moves through NPC/object-heavy screens, opens/closes the menu, and captures NPC text through frame 11400. Source-debug classification includes BG/window/OBJ source, tile id, attr byte, palette, color id, priority, visible mismatch class, source-state class, sampled mismatches, and per-stage mismatch class.
 
 Remaining:
 
-- Stricter CGB visual oracle thresholds, broader CGB render oracles, and exact CGB raster/FIFO timing.
+- Stricter CGB visual oracle thresholds, stricter CGB color/palette accuracy, broader CGB render oracles, and exact CGB raster/FIFO timing.
 - Exact GDMA/HDMA CPU-stall timing.
 - Exact STOP speed-switch blackout timing.
 - Full CGB boot behavior and real CGB ROM compatibility gates.
@@ -151,6 +151,7 @@ Run these before treating a compatibility or timing change as safe:
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_crystal_cgb_render.py --checkpoint-frames 60,600,2400,3600 --require-crystal-attributes --json-output qa-output\crystal-cgb-render-staged.json --frame-output-dir qa-output\crystal-cgb-stages
 python -B scripts\verify_crystal_cgb_oracle.py --output-dir qa-output\crystal-cgb-pyboy-oracle --json-output qa-output\crystal-cgb-pyboy-oracle.json
 python -B scripts\verify_crystal_cgb_oracle.py --scenario dynamic --output-dir qa-output\crystal-cgb-pyboy-oracle-dynamic --json-output qa-output\crystal-cgb-pyboy-oracle-dynamic.json
+python -B scripts\verify_crystal_cgb_oracle.py --scenario overworld --output-dir qa-output\crystal-cgb-pyboy-oracle-overworld --json-output qa-output\crystal-cgb-pyboy-oracle-overworld.json
 .\.tools\python-3.12.4-embed-amd64\python.exe -B scripts\verify_pokemon_red.py
 python -B scripts\verify_oak_encyclopedia_oracle.py
 python -B scripts\verify_pokemon_red_sprite_scene_oracle.py
@@ -194,17 +195,19 @@ Current target thresholds:
 
 ## Recommended Next Goals
 
-### 1. Extend Crystal CGB Oracles Into Saved-Game Overworld Movement
+### 1. Tighten Crystal CGB Saved-Game Palette Accuracy
 
-The Crystal PyBoy oracle now compares static and dynamic wall-frame checkpoints, writes targeted crops, records nonblack structural coverage, and emits source-debug classification. The old frame-3600 visible coverage mismatch was traced to bank-0 BG tilemap transfer timing caused by CPU fast WRAM helpers bypassing the selected CGB WRAM bank for `$D000-$DFFF` and echo RAM. Fixing that path made the current 2400, 3600, and 4800 checkpoints pixel-exact against PyBoy. The dynamic scenario now adds 11 deterministic title animation, menu movement, dialog/text, clock menu, and confirmation checkpoints through frame 7800; all current dynamic checkpoints are pixel-exact with `mismatch_class=none`.
+The Crystal PyBoy oracle now covers three useful lanes. Static locks frames 2400, 3600, and 4800 as exact matches. Dynamic adds 11 title/menu/dialog/clock checkpoints through frame 7800, all exact against PyBoy. Saved-game `--scenario overworld` loads `saves\pokemon-crystal-test.sav`, continues into a real overworld map, moves through NPC/object-heavy screens, opens/closes the menu, and captures NPC text through frame 11400.
+
+Latest overworld evidence passes with tolerant structural thresholds. Frame 4800 is exact. The gameplay/menu/text frames are structurally stable with near-zero nonblack coverage drift, and every non-exact checkpoint classifies as `palette`.
 
 Suggested focus:
 
-- Keep frame 60 as a startup/LCD-transition sample and frames 2400, 3600, and 4800 as static exact-match regression checkpoints.
-- Keep `--scenario dynamic` as the fast no-save Crystal transition gate for title animation, menu cursor movement, intro text, and clock menus.
-- Add or generate a small Crystal save fixture that starts in an overworld scene so the next oracle can cover player movement, NPC/sprite-heavy scenes, opened menus, text boxes, and palette/animation transitions without replaying the full new-game intro.
-- Keep the invisible frame-3600 bank-0 `9800` source-state drift visible in JSON, but do not treat it as the old visible coverage regression unless it produces image differences again.
-- Keep the Crystal staged gate, Crystal PyBoy oracle, Pokemon Red performance gate, Super Mario Land performance gate, Blargg CPU gate, and full unit suite green after each CGB change.
+- Compare GBemu and PyBoy CGB palette RAM, palette index writes, LCD mode-3 palette blocking, and RGB555-to-RGB conversion at overworld frames 5400, 8400, and 9600.
+- Determine whether the visible color drift is a palette register/state issue, RGB conversion/color-correction difference, timing of palette writes, or RTC/time-of-day palette path.
+- Keep BG/window/OBJ structural checks green while tightening color thresholds only after the palette cause is understood.
+- Keep static frames 2400/3600/4800 exact, keep all 11 dynamic checkpoints exact, and keep the saved-game overworld path passing.
+- Keep the Crystal staged gate, CGB foundation gate, Pokemon Red performance gate, Super Mario Land performance gate, Blargg CPU gate, and full unit suite green after each CGB change.
 
 ### 2. Save Live-Window Profile Fixtures
 
