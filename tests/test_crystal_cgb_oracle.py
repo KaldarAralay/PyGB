@@ -6,9 +6,12 @@ from PIL import Image
 
 from ppu import SCREEN_HEIGHT, SCREEN_WIDTH
 from scripts.verify_crystal_cgb_oracle import (
+    classify_visible_mismatch,
     compare_rgb_images,
+    compare_source_states,
     evaluate_oracle_stage,
     image_metrics,
+    parse_source_debug_checkpoints,
     stage_requires_color_variety,
 )
 
@@ -89,6 +92,74 @@ class CrystalCgbOracleTests(unittest.TestCase):
                 checkpoints,
                 attribute_checkpoint_frame=2400,
             )
+        )
+
+    def test_parse_source_debug_checkpoints_accepts_none_and_lists(self) -> None:
+        self.assertEqual(parse_source_debug_checkpoints("none"), set())
+        self.assertEqual(parse_source_debug_checkpoints("3600, 4800"), {3600, 4800})
+
+    def test_compare_source_states_confirms_non_suspects_and_vram_drift(self) -> None:
+        def state() -> dict:
+            io = {
+                0xFF40: 0xE7,
+                0xFF41: 0x80,
+                0xFF42: 8,
+                0xFF43: 0,
+                0xFF44: 25,
+                0xFF4A: 136,
+                0xFF4B: 7,
+                0xFF4F: 0xFE,
+                0xFF55: 0x80,
+                0xFF6C: 0xFE,
+            }
+            return {
+                "io": io,
+                "vram0": [0] * 0x2000,
+                "vram1": [0] * 0x2000,
+                "oam": [0] * 160,
+                "bg_palette_ram": [0] * 64,
+                "obj_palette_ram": [0] * 64,
+            }
+
+        gbemu = state()
+        pyboy = state()
+        pyboy["vram0"][0x1800] = 1
+
+        comparison = compare_source_states(gbemu, pyboy)
+
+        self.assertTrue(comparison["non_suspects"]["oam_equal"])
+        self.assertTrue(comparison["non_suspects"]["bank1_attribute_maps_equal"])
+        self.assertEqual(
+            comparison["vram_sections"]["bank0_bg_map_9800"]["first_diff"],
+            {"offset": 0x1800, "gbemu": 0, "pyboy": 1},
+        )
+        self.assertEqual(comparison["suspect_class"], "bank0_vram_tiledata_or_bg_map_timing")
+
+    def test_classify_visible_mismatch_separates_exact_image_from_state_drift(self) -> None:
+        gbemu = Image.new("RGB", (2, 1), (0, 0, 0))
+        pyboy = Image.new("RGB", (2, 1), (0, 0, 0))
+
+        self.assertEqual(
+            classify_visible_mismatch(
+                gbemu,
+                pyboy,
+                {"pyboy_only_nonblack_source_counts": {"background": 2}},
+            ),
+            "none",
+        )
+
+    def test_classify_visible_mismatch_reports_bg_window_coverage(self) -> None:
+        gbemu = Image.new("RGB", (2, 1), (0, 0, 0))
+        pyboy = Image.new("RGB", (2, 1), (0, 0, 0))
+        pyboy.putpixel((1, 0), (248, 248, 248))
+
+        self.assertEqual(
+            classify_visible_mismatch(
+                gbemu,
+                pyboy,
+                {"pyboy_only_nonblack_source_counts": {"background": 1}},
+            ),
+            "bg_window_coverage",
         )
 
     def test_evaluate_oracle_stage_rejects_pyboy_blank_and_major_diff(self) -> None:

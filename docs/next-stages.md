@@ -129,7 +129,7 @@ Done:
 - `scripts\verify_cgb_foundation.py` synthetic smoke verifier, including GDMA/HDMA data movement, KEY1 double-speed timing-domain checks, and a local Pokemon Crystal header/startup check when `roms\crystal.gbc` exists.
 - `scripts\verify_crystal_window_startup.py` headless/window smoke verifier, confirming Crystal reaches the first frame in CGB mode and Tk presents before first-frame emulation begins while reporting KEY1 speed-switch activity.
 - `scripts\verify_crystal_cgb_render.py` staged render verifier, including synthetic CGB BG palette/bank/flip checks, synthetic CGB OBJ palette/bank/priority checks, and Pokemon Crystal 60/600/2400/3600-frame checkpoints with JSON metrics, BMP dumps, required CGB VRAM-DMA activity, CGB tile-attribute assertions from 2400 frames onward, LCDC/STAT/LY capture, and KEY1 activity reporting.
-- `scripts\verify_crystal_cgb_oracle.py` PyBoy CGB visual oracle, comparing GBemu and PyBoy RGB frames at 60, 600, 2400, 3600, and a scripted 4800 wall-frame title/menu checkpoint while dumping GBemu/PyBoy/diff/crop PNGs and JSON diff plus nonblack structural metrics.
+- `scripts\verify_crystal_cgb_oracle.py` PyBoy CGB visual oracle, comparing GBemu and PyBoy RGB frames at 60, 600, 2400, 3600, and a scripted 4800 wall-frame title/menu checkpoint while dumping GBemu/PyBoy/diff/crop PNGs and JSON diff plus nonblack structural metrics. Frame 3600 includes source-debug classification for BG/window/OBJ source, tile id, attr byte, palette, color id, priority, visible mismatch class, source-state class, and sampled mismatches.
 
 Remaining:
 
@@ -193,16 +193,17 @@ Current target thresholds:
 
 ## Recommended Next Goals
 
-### 1. Continue Reducing Crystal CGB Visual Mismatch Classes
+### 1. Make Crystal CGB Movement And Transition Oracles First-Class
 
-The Crystal PyBoy oracle now compares wall-frame checkpoints, writes targeted crops, and records nonblack structural coverage. The frame-3600 wrong tile-attribute class was reduced by fixing CPU direct-fast CGB VRAM bank handling; staged Crystal now reports hundreds of bank-1 attrs instead of a few dozen. The next CGB work should continue reducing one visible mismatch class at a time.
+The Crystal PyBoy oracle now compares wall-frame checkpoints, writes targeted crops, records nonblack structural coverage, and emits frame-3600 source-debug classification. The old frame-3600 visible coverage mismatch was traced to bank-0 BG tilemap transfer timing caused by CPU fast WRAM helpers bypassing the selected CGB WRAM bank for `$D000-$DFFF` and echo RAM. Fixing that path made the current 2400, 3600, and 4800 checkpoints pixel-exact against PyBoy. Frame 3600 now reports `visible_mismatch_class=none`; the remaining source-state class is an invisible bank-0 `9800` tilemap drift of 48 bytes.
 
 Suggested focus:
 
 - Treat frame 60 as a startup/LCD-transition sample, not a compatibility failure.
 - Use frame 600 for early logo coverage and LCD-transition timing.
-- Use frame 2400 as the color-conversion baseline because structural coverage is already close.
-- Use frame 3600 as the remaining larger structural target; tile-bank attributes are no longer the first suspect, so focus next on BG/window coverage, priority, color conversion, FIFO timing, or HDMA-visible timing.
+- Use frames 2400, 3600, and 4800 as static exact-match regression checkpoints.
+- Add scripted Crystal paths through movement, menu/text, sprite-heavy scenes, and palette/animation transitions so CGB behavior is tested while state is changing, not only at idle/static frames.
+- Keep the invisible frame-3600 bank-0 `9800` source-state drift visible in JSON, but do not treat it as the old visible coverage regression unless it produces image differences again.
 - Keep the Crystal staged gate, Crystal PyBoy oracle, Pokemon Red performance gate, Super Mario Land performance gate, Blargg CPU gate, and full unit suite green after each CGB change.
 
 ### 2. Save Live-Window Profile Fixtures

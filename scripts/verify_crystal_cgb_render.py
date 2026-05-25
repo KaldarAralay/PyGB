@@ -95,7 +95,7 @@ def run_synthetic_attribute_checks() -> tuple[dict[str, Any], list[str]]:
     palette_bus.vram[0x2000 + 0x1800] = 0x03
     palette_bus.ppu.render_scanline(0)
     palette_pixel = palette_bus.ppu.framebuffer[0][0]
-    palette_expected = rgb_to_framebuffer_pixel(0, 255, 0)
+    palette_expected = rgb_to_framebuffer_pixel(0, 248, 0)
     if palette_pixel != palette_expected:
         failures.append("synthetic: BG palette attribute did not select BGP3 color 2")
 
@@ -109,7 +109,7 @@ def run_synthetic_attribute_checks() -> tuple[dict[str, Any], list[str]]:
     bank_bus.vram[0x2000 + 0x1800] = 0x08
     bank_bus.ppu.render_scanline(0)
     bank_pixel = bank_bus.ppu.framebuffer[0][0]
-    bank_expected = rgb_to_framebuffer_pixel(0, 0, 255)
+    bank_expected = rgb_to_framebuffer_pixel(0, 0, 248)
     if bank_pixel != bank_expected:
         failures.append("synthetic: BG attribute bit 3 did not select tile data from VRAM bank 1")
 
@@ -123,7 +123,7 @@ def run_synthetic_attribute_checks() -> tuple[dict[str, Any], list[str]]:
     flip_bus.vram[0x2000 + 0x1800] = 0x60
     flip_bus.ppu.render_scanline(0)
     flip_pixel = flip_bus.ppu.framebuffer[0][0]
-    flip_expected = rgb_to_framebuffer_pixel(0, 255, 0)
+    flip_expected = rgb_to_framebuffer_pixel(0, 248, 0)
     if flip_pixel != flip_expected:
         failures.append("synthetic: BG attribute X/Y flip bits did not mirror tile pixels")
 
@@ -134,7 +134,7 @@ def run_synthetic_attribute_checks() -> tuple[dict[str, Any], list[str]]:
     set_sprite(obj_palette_bus, 0, attrs=0x05)
     obj_palette_bus.ppu.render_scanline(0)
     obj_palette_pixel = obj_palette_bus.ppu.framebuffer[0][0]
-    obj_palette_expected = rgb_to_framebuffer_pixel(255, 0, 0)
+    obj_palette_expected = rgb_to_framebuffer_pixel(248, 0, 0)
     if obj_palette_pixel != obj_palette_expected:
         failures.append("synthetic: OBJ palette attribute did not select OBP5 color 2")
 
@@ -147,7 +147,7 @@ def run_synthetic_attribute_checks() -> tuple[dict[str, Any], list[str]]:
     set_sprite(obj_bank_bus, 0, attrs=0x08)
     obj_bank_bus.ppu.render_scanline(0)
     obj_bank_pixel = obj_bank_bus.ppu.framebuffer[0][0]
-    obj_bank_expected = rgb_to_framebuffer_pixel(0, 0, 255)
+    obj_bank_expected = rgb_to_framebuffer_pixel(0, 0, 248)
     if obj_bank_pixel != obj_bank_expected:
         failures.append("synthetic: OBJ attribute bit 3 did not select tile data from VRAM bank 1")
 
@@ -161,7 +161,7 @@ def run_synthetic_attribute_checks() -> tuple[dict[str, Any], list[str]]:
     set_sprite(obj_order_bus, 1, x=12, tile=4)
     obj_order_bus.ppu.render_scanline(0)
     obj_order_pixel = obj_order_bus.ppu.framebuffer[0][8]
-    obj_order_expected = rgb_to_framebuffer_pixel(255, 0, 0)
+    obj_order_expected = rgb_to_framebuffer_pixel(248, 0, 0)
     if obj_order_pixel != obj_order_expected:
         failures.append("synthetic: CGB OBJ priority did not prefer the earlier OAM entry")
 
@@ -176,7 +176,7 @@ def run_synthetic_attribute_checks() -> tuple[dict[str, Any], list[str]]:
     set_sprite(obj_opri_bus, 1, x=12, tile=4)
     obj_opri_bus.ppu.render_scanline(0)
     obj_opri_pixel = obj_opri_bus.ppu.framebuffer[0][8]
-    obj_opri_expected = rgb_to_framebuffer_pixel(0, 255, 0)
+    obj_opri_expected = rgb_to_framebuffer_pixel(0, 248, 0)
     if obj_opri_pixel != obj_opri_expected:
         failures.append("synthetic: OPRI DMG-style mode did not prefer the lower X OBJ")
 
@@ -191,7 +191,7 @@ def run_synthetic_attribute_checks() -> tuple[dict[str, Any], list[str]]:
     set_sprite(obj_bg_priority_bus, 0)
     obj_bg_priority_bus.ppu.render_scanline(0)
     obj_bg_priority_pixel = obj_bg_priority_bus.ppu.framebuffer[0][0]
-    obj_bg_priority_expected = rgb_to_framebuffer_pixel(0, 255, 0)
+    obj_bg_priority_expected = rgb_to_framebuffer_pixel(0, 248, 0)
     if obj_bg_priority_pixel != obj_bg_priority_expected:
         failures.append("synthetic: CGB BG attribute priority did not hide the OBJ pixel")
 
@@ -206,7 +206,7 @@ def run_synthetic_attribute_checks() -> tuple[dict[str, Any], list[str]]:
     set_sprite(obj_lcdc_priority_bus, 0, attrs=0x80)
     obj_lcdc_priority_bus.ppu.render_scanline(0)
     obj_lcdc_priority_pixel = obj_lcdc_priority_bus.ppu.framebuffer[0][0]
-    obj_lcdc_priority_expected = rgb_to_framebuffer_pixel(255, 0, 0)
+    obj_lcdc_priority_expected = rgb_to_framebuffer_pixel(248, 0, 0)
     if obj_lcdc_priority_pixel != obj_lcdc_priority_expected:
         failures.append("synthetic: CGB LCDC bit 0 clear did not force OBJ over BG priority")
 

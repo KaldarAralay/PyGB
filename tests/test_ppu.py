@@ -1343,7 +1343,7 @@ class PPUTests(unittest.TestCase):
 
         bus.ppu.render_scanline(0)
 
-        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 255, 0))
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 248, 0))
 
     def test_cgb_background_attribute_selects_tile_vram_bank(self) -> None:
         bus = make_bus(EmulationMode.CGB)
@@ -1357,7 +1357,7 @@ class PPUTests(unittest.TestCase):
 
         bus.ppu.render_scanline(0)
 
-        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 0, 255))
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 0, 248))
 
     def test_cgb_background_attributes_flip_tile_pixels(self) -> None:
         bus = make_bus(EmulationMode.CGB)
@@ -1371,7 +1371,7 @@ class PPUTests(unittest.TestCase):
 
         bus.ppu.render_scanline(0)
 
-        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 255, 0))
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 248, 0))
 
     def test_lcdc_bg_window_disable_blanks_background_and_window(self) -> None:
         bus = make_bus()
@@ -1893,7 +1893,7 @@ class PPUTests(unittest.TestCase):
 
         bus.ppu.render_scanline(0)
 
-        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(255, 0, 0))
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(248, 0, 0))
 
     def test_cgb_sprite_attribute_selects_tile_vram_bank(self) -> None:
         bus = make_bus(EmulationMode.CGB)
@@ -1906,7 +1906,7 @@ class PPUTests(unittest.TestCase):
 
         bus.ppu.render_scanline(0)
 
-        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 0, 255))
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 0, 248))
 
     def test_cgb_oam_priority_beats_x_priority(self) -> None:
         bus = make_bus(EmulationMode.CGB)
@@ -1920,7 +1920,7 @@ class PPUTests(unittest.TestCase):
 
         bus.ppu.render_scanline(0)
 
-        self.assertEqual(bus.ppu.framebuffer[0][8], rgb_to_framebuffer_pixel(255, 0, 0))
+        self.assertEqual(bus.ppu.framebuffer[0][8], rgb_to_framebuffer_pixel(248, 0, 0))
 
     def test_cgb_opri_dmg_mode_uses_x_priority(self) -> None:
         bus = make_bus(EmulationMode.CGB)
@@ -1935,7 +1935,7 @@ class PPUTests(unittest.TestCase):
 
         bus.ppu.render_scanline(0)
 
-        self.assertEqual(bus.ppu.framebuffer[0][8], rgb_to_framebuffer_pixel(0, 255, 0))
+        self.assertEqual(bus.ppu.framebuffer[0][8], rgb_to_framebuffer_pixel(0, 248, 0))
 
     def test_cgb_oam_priority_masks_lower_sprite_before_bg_priority(self) -> None:
         bus = make_bus(EmulationMode.CGB)
@@ -1952,7 +1952,7 @@ class PPUTests(unittest.TestCase):
 
         bus.ppu.render_scanline(0)
 
-        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 255, 0))
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 248, 0))
 
     def test_cgb_bg_attribute_priority_hides_sprite(self) -> None:
         bus = make_bus(EmulationMode.CGB)
@@ -1967,7 +1967,7 @@ class PPUTests(unittest.TestCase):
 
         bus.ppu.render_scanline(0)
 
-        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 255, 0))
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(0, 248, 0))
 
     def test_cgb_lcdc_bit_zero_clear_allows_sprite_over_priority_background(self) -> None:
         bus = make_bus(EmulationMode.CGB)
@@ -1982,7 +1982,7 @@ class PPUTests(unittest.TestCase):
 
         bus.ppu.render_scanline(0)
 
-        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(255, 0, 0))
+        self.assertEqual(bus.ppu.framebuffer[0][0], rgb_to_framebuffer_pixel(248, 0, 0))
 
     def test_offscreen_sprites_count_toward_scanline_limit(self) -> None:
         bus = make_bus()

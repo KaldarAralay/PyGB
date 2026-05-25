@@ -191,6 +191,28 @@ class CPUTests(unittest.TestCase):
         self.assertEqual(cpu.a, 0x00)
         self.assertEqual(cpu.f & (FLAG_Z | FLAG_N | FLAG_H | FLAG_C), FLAG_Z | FLAG_C)
 
+    def test_cgb_fast_ld_a_hl_reads_selected_wram_bank(self) -> None:
+        cpu, bus = make_cgb_cpu(bytes([0x21, 0x02, 0xD0, 0x7E, 0x76]))
+        bus.write8(0xFF70, 0x05)
+        bus.wram[0x1002] = 0x11
+        bus.wram[0x5002] = 0x42
+
+        cpu.run(max_instructions=2)
+
+        self.assertEqual(cpu.a, 0x42)
+        self.assertEqual(bus.wram[0x1002], 0x11)
+
+    def test_cgb_fast_ld_hl_a_writes_selected_wram_bank(self) -> None:
+        cpu, bus = make_cgb_cpu(bytes([0x21, 0x02, 0xD0, 0x3E, 0x55, 0x77, 0x76]))
+        bus.write8(0xFF70, 0x05)
+        bus.wram[0x1002] = 0x11
+        bus.wram[0x5002] = 0x42
+
+        cpu.run(max_instructions=3)
+
+        self.assertEqual(bus.wram[0x5002], 0x55)
+        self.assertEqual(bus.wram[0x1002], 0x11)
+
     def test_call_ret_and_stack_order(self) -> None:
         cpu, _ = make_cpu(bytes([0xCD, 0x06, 0x01, 0x3E, 0x42, 0x76, 0x3E, 0x99, 0xC9]))
 

@@ -5874,9 +5874,14 @@ class CPU:
         if 0xA000 <= address <= 0xBFFF:
             return bus.mapper.read_ram(address)
         if 0xC000 <= address <= 0xDFFF:
-            return bus.wram[address - 0xC000]
+            if not bus.cgb_mode or address < 0xD000:
+                return bus.wram[address - 0xC000]
+            return bus.wram[(bus._wram_bank_register or 1) * 0x1000 + (address - 0xD000)]
         if 0xE000 <= address <= 0xFDFF:
-            return bus.wram[address - 0xE000]
+            effective = address - 0x2000
+            if not bus.cgb_mode or effective < 0xD000:
+                return bus.wram[effective - 0xC000]
+            return bus.wram[(bus._wram_bank_register or 1) * 0x1000 + (effective - 0xD000)]
         return bus.read8(address)
 
     def _read8_direct_fast(self, address: int, stable_cycles: int = 0) -> int | None:
@@ -5908,9 +5913,14 @@ class CPU:
         if 0xA000 <= address <= 0xBFFF:
             return bus.mapper.read_ram(address)
         if 0xC000 <= address <= 0xDFFF:
-            return bus.wram[address - 0xC000]
+            if not bus.cgb_mode or address < 0xD000:
+                return bus.wram[address - 0xC000]
+            return bus.wram[(bus._wram_bank_register or 1) * 0x1000 + (address - 0xD000)]
         if 0xE000 <= address <= 0xFDFF:
-            return bus.wram[address - 0xE000]
+            effective = address - 0x2000
+            if not bus.cgb_mode or effective < 0xD000:
+                return bus.wram[effective - 0xC000]
+            return bus.wram[(bus._wram_bank_register or 1) * 0x1000 + (effective - 0xD000)]
         return None
 
     def _write8(self, address: int, value: int) -> None:
@@ -5928,10 +5938,17 @@ class CPU:
             bus.write8(address, value)
             return
         if 0xC000 <= address <= 0xDFFF:
-            bus.wram[address - 0xC000] = value
+            if not bus.cgb_mode or address < 0xD000:
+                bus.wram[address - 0xC000] = value
+            else:
+                bus.wram[(bus._wram_bank_register or 1) * 0x1000 + (address - 0xD000)] = value
             return
         if 0xE000 <= address <= 0xFDFF:
-            bus.wram[address - 0xE000] = value
+            effective = address - 0x2000
+            if not bus.cgb_mode or effective < 0xD000:
+                bus.wram[effective - 0xC000] = value
+            else:
+                bus.wram[(bus._wram_bank_register or 1) * 0x1000 + (effective - 0xD000)] = value
             return
         bus.write8(address, value)
 
@@ -5960,10 +5977,17 @@ class CPU:
             bus.mapper.write_ram(address, value)
             return True
         if 0xC000 <= address <= 0xDFFF:
-            bus.wram[address - 0xC000] = value
+            if not bus.cgb_mode or address < 0xD000:
+                bus.wram[address - 0xC000] = value
+            else:
+                bus.wram[(bus._wram_bank_register or 1) * 0x1000 + (address - 0xD000)] = value
             return True
         if 0xE000 <= address <= 0xFDFF:
-            bus.wram[address - 0xE000] = value
+            effective = address - 0x2000
+            if not bus.cgb_mode or effective < 0xD000:
+                bus.wram[effective - 0xC000] = value
+            else:
+                bus.wram[(bus._wram_bank_register or 1) * 0x1000 + (effective - 0xD000)] = value
             return True
         return False
 

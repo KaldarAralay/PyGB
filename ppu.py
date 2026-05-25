@@ -76,9 +76,9 @@ def _rgb555_to_framebuffer_pixel(low: int, high: int) -> int:
     red5 = value & 0x1F
     green5 = (value >> 5) & 0x1F
     blue5 = (value >> 10) & 0x1F
-    red = (red5 << 3) | (red5 >> 2)
-    green = (green5 << 3) | (green5 >> 2)
-    blue = (blue5 << 3) | (blue5 >> 2)
+    red = red5 << 3
+    green = green5 << 3
+    blue = blue5 << 3
     return rgb_to_framebuffer_pixel(red, green, blue)
 
 
