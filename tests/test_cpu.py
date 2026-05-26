@@ -213,6 +213,41 @@ class CPUTests(unittest.TestCase):
         self.assertEqual(bus.wram[0x5002], 0x55)
         self.assertEqual(bus.wram[0x1002], 0x11)
 
+    def test_cgb_fast_ld_a_abs_reads_selected_wram_bank(self) -> None:
+        cpu, bus = make_cgb_cpu(bytes([0xFA, 0x02, 0xD0, 0x76]))
+        bus.write8(0xFF70, 0x05)
+        bus.wram[0x1002] = 0x11
+        bus.wram[0x5002] = 0x42
+
+        cpu.run(max_instructions=1)
+
+        self.assertEqual(cpu.a, 0x42)
+        self.assertEqual(bus.wram[0x1002], 0x11)
+
+    def test_cgb_fast_ld_abs_a_writes_selected_wram_bank(self) -> None:
+        cpu, bus = make_cgb_cpu(bytes([0x3E, 0x55, 0xEA, 0x02, 0xD0, 0x76]))
+        bus.write8(0xFF70, 0x05)
+        bus.wram[0x1002] = 0x11
+        bus.wram[0x5002] = 0x42
+
+        cpu.run(max_instructions=2)
+
+        self.assertEqual(bus.wram[0x5002], 0x55)
+        self.assertEqual(bus.wram[0x1002], 0x11)
+
+    def test_cgb_fast_ld_hl_d_and_e_write_selected_wram_bank(self) -> None:
+        cpu, bus = make_cgb_cpu(
+            bytes([0x21, 0x02, 0xD0, 0x16, 0x66, 0x72, 0x1E, 0x77, 0x73, 0x76])
+        )
+        bus.write8(0xFF70, 0x05)
+        bus.wram[0x1002] = 0x11
+        bus.wram[0x5002] = 0x42
+
+        cpu.run(max_instructions=5)
+
+        self.assertEqual(bus.wram[0x5002], 0x77)
+        self.assertEqual(bus.wram[0x1002], 0x11)
+
     def test_call_ret_and_stack_order(self) -> None:
         cpu, _ = make_cpu(bytes([0xCD, 0x06, 0x01, 0x3E, 0x42, 0x76, 0x3E, 0x99, 0xC9]))
 

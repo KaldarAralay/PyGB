@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import struct
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,12 +84,10 @@ CRYSTAL_DYNAMIC_STAGE_LABELS = {
 CRYSTAL_OVERWORLD_CHECKPOINT_FRAMES = (
     4800,
     5400,
-    6000,
-    6600,
     7200,
-    7800,
     8400,
-    9000,
+    8580,
+    9060,
     9600,
     10200,
     10800,
@@ -109,12 +109,10 @@ CRYSTAL_OVERWORLD_BUTTON_SCRIPT = (
 CRYSTAL_OVERWORLD_STAGE_LABELS = {
     4800: "saved-game-summary",
     5400: "overworld-entry",
-    6000: "overworld-object-screen",
-    6600: "overworld-left-movement",
-    7200: "overworld-npc-approach",
-    7800: "overworld-menu-trigger",
-    8400: "overworld-menu-open",
-    9000: "overworld-menu-close",
+    7200: "overworld-movement-object-screen",
+    8400: "overworld-menu-input-edge",
+    8580: "overworld-menu-open",
+    9060: "overworld-menu-close",
     9600: "overworld-text-box",
     10200: "overworld-text-advance",
     10800: "overworld-text-held",
@@ -126,6 +124,30 @@ DEFAULT_MAX_MAJOR_DIFF_RATIO = 0.95
 DEFAULT_MAX_NONBLACK_DELTA_RATIO = 0.98
 DOTS_PER_FRAME = DOTS_PER_LINE * LINES_PER_FRAME
 SOURCE_DEBUG_SAMPLE_LIMIT = 32
+PYBOY_CGB_POST_BOOT_IO_DEFAULTS = {
+    0xFF00: 0xCF,
+    0xFF01: 0x00,
+    0xFF02: 0x7F,
+    0xFF05: 0x00,
+    0xFF06: 0x00,
+    0xFF07: 0xF8,
+    0xFF0F: 0xE1,
+    0xFF40: 0x91,
+    0xFF42: 0x00,
+    0xFF43: 0x00,
+    0xFF45: 0x00,
+    0xFF47: 0xFC,
+    0xFF48: 0xFF,
+    0xFF49: 0xFF,
+    0xFF4A: 0x00,
+    0xFF4B: 0x00,
+    0xFF4D: 0x7E,
+    0xFF51: 0xFF,
+    0xFF52: 0xF0,
+    0xFF53: 0x1F,
+    0xFF54: 0xF0,
+    0xFF55: 0xFF,
+}
 CGB_ATTR_PRIORITY = 0x80
 CGB_ATTR_Y_FLIP = 0x40
 CGB_ATTR_X_FLIP = 0x20
@@ -153,6 +175,8 @@ class OracleScenario:
     stage_labels: dict[int, str]
     save_file: Path | None = None
     attribute_checkpoint_frame: int = DEFAULT_ATTRIBUTE_CHECKPOINT_FRAME
+    gbemu_frame_clock: Literal["cpu", "ppu"] = "cpu"
+    gbemu_input_clock: Literal["wall", "ppu"] = "wall"
 
 
 ORACLE_SCENARIOS = {
@@ -293,6 +317,15 @@ def parse_args() -> argparse.Namespace:
             "are added to JSON. Use 'none' to disable. Defaults to the selected scenario."
         ),
     )
+    parser.add_argument(
+        "--strict-source-state",
+        action="store_true",
+        help=(
+            "Fail source-debug checkpoints on palette RAM, OAM, VRAM section, "
+            "and stable register mismatches. Without this flag, source-debug "
+            "remains diagnostic metadata for the tolerant visual oracle."
+        ),
+    )
     parser.add_argument("--print-json", action="store_true")
     return parser.parse_args()
 
@@ -329,6 +362,127 @@ def resolve_oracle_save_file(
     if scenario.save_file is not None:
         return scenario.save_file, "scenario"
     return None, None
+
+
+def _rtc_sidecar_path(save_file: Path) -> Path:
+    return Path(f"{save_file}.rtc")
+
+
+def _gbemu_rtc_state_from_sidecar(sidecar_bytes: bytes) -> dict[str, Any] | None:
+    try:
+        state = json.loads(sidecar_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(state, dict) or int(state.get("version", 0)) != 1:
+        return None
+    return state
+
+
+def _gbemu_rtc_saved_at_from_sidecar(sidecar_bytes: bytes) -> float | None:
+    state = _gbemu_rtc_state_from_sidecar(sidecar_bytes)
+    if state is None:
+        return None
+    try:
+        return float(state["saved_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _deterministic_rtc_now_from_sidecar(sidecar_bytes: bytes) -> float | None:
+    state = _gbemu_rtc_state_from_sidecar(sidecar_bytes)
+    if state is None:
+        return None
+    saved_at = _gbemu_rtc_saved_at_from_sidecar(sidecar_bytes)
+    if saved_at is not None:
+        return saved_at
+    return 0.0
+
+
+def _gbemu_rtc_total_seconds(
+    sidecar_bytes: bytes,
+    *,
+    now: float | None = None,
+) -> int | None:
+    state = _gbemu_rtc_state_from_sidecar(sidecar_bytes)
+    if state is None:
+        return None
+
+    current_time = _deterministic_rtc_now_from_sidecar(sidecar_bytes) if now is None else now
+    if current_time is None:
+        return None
+    total_seconds = (
+        min(max(int(state["seconds"]), 0), 59)
+        + min(max(int(state["minutes"]), 0), 59) * 60
+        + min(max(int(state["hours"]), 0), 23) * 3600
+        + min(max(int(state["days"]), 0), 0x1FF) * 86400
+    )
+    if not bool(state["halt"]):
+        saved_at = float(state.get("saved_at", current_time))
+        elapsed = int(current_time - saved_at)
+        if elapsed > 0:
+            total_seconds += elapsed
+    return total_seconds
+
+
+def _pyboy_rtc_bytes_from_gbemu_sidecar(
+    sidecar_bytes: bytes,
+    *,
+    now: float | None = None,
+    host_now: float | None = None,
+) -> bytes | None:
+    state = _gbemu_rtc_state_from_sidecar(sidecar_bytes)
+    if state is None:
+        return None
+
+    total_seconds = _gbemu_rtc_total_seconds(sidecar_bytes, now=now)
+    if total_seconds is None:
+        return None
+
+    # PyBoy stores RTC as a host-time epoch. When this helper is used for an
+    # actual PyBoy run, callers pass host_now explicitly; otherwise the helper
+    # remains deterministic and wall-clock-free for tests/conversion checks.
+    current_time = (
+        _deterministic_rtc_now_from_sidecar(sidecar_bytes)
+        if host_now is None
+        else host_now
+    )
+    if current_time is None:
+        return None
+    timezero = current_time - total_seconds
+    halt = bool(state["halt"])
+    return struct.pack("d", timezero) + bytes([int(halt), int(bool(state["carry"]))])
+
+
+def load_pyboy_rtc_file(
+    save_file: Path | None,
+    *,
+    now: float | None = None,
+    host_now: float | None = None,
+) -> io.BytesIO | None:
+    if save_file is None:
+        return None
+    rtc_path = _rtc_sidecar_path(save_file)
+    if not rtc_path.exists():
+        return None
+    sidecar_bytes = rtc_path.read_bytes()
+    pyboy_bytes = _pyboy_rtc_bytes_from_gbemu_sidecar(
+        sidecar_bytes,
+        now=now,
+        host_now=host_now,
+    )
+    return io.BytesIO(pyboy_bytes if pyboy_bytes is not None else sidecar_bytes)
+
+
+def load_oracle_rtc_now(save_file: Path | None) -> float | None:
+    if save_file is None:
+        return None
+    rtc_path = _rtc_sidecar_path(save_file)
+    if rtc_path.exists():
+        rtc_now = _deterministic_rtc_now_from_sidecar(rtc_path.read_bytes())
+        if rtc_now is not None:
+            return rtc_now
+        raise ValueError(f"RTC sidecar is not a deterministic GBemu JSON fixture: {rtc_path}")
+    raise ValueError(f"RTC sidecar is required for deterministic saved-game oracle: {rtc_path}")
 
 
 def parse_source_debug_checkpoints(
@@ -529,6 +683,46 @@ def stage_requires_color_variety(
     )
 
 
+def _strict_section_failure(label: str, section_name: str, section: dict[str, Any]) -> str:
+    first_diff = section.get("first_diff")
+    detail = "" if first_diff is None else f"; first diff {first_diff}"
+    return f"{label}: source state {section_name} differs{detail}"
+
+
+def strict_source_state_failures(stage: dict[str, Any]) -> list[str]:
+    label = f"crystal oracle frame {stage.get('checkpoint', '?')}"
+    if not stage.get("strict_source_state_required"):
+        return []
+
+    source_debug = stage.get("source_debug")
+    if source_debug is None:
+        return [f"{label}: source-debug capture is required but missing"]
+
+    state_compare = source_debug.get("state_compare", {})
+    failures: list[str] = []
+    for section_name, section in state_compare.get("palette_ram", {}).items():
+        if not section.get("equal", True):
+            failures.append(_strict_section_failure(label, section_name, section))
+
+    oam = state_compare.get("oam", {})
+    if not oam.get("equal", True):
+        failures.append(_strict_section_failure(label, "oam", oam))
+
+    for section_name, section in state_compare.get("vram_sections", {}).items():
+        if not section.get("equal", True):
+            failures.append(_strict_section_failure(label, section_name, section))
+
+    for register, values in state_compare.get("register_values", {}).items():
+        if register in {"FF41", "FF44"}:
+            continue
+        if not values.get("equal", True):
+            failures.append(
+                f"{label}: source state register {register} differs; "
+                f"gbemu={values.get('gbemu')} pyboy={values.get('pyboy')}"
+            )
+    return failures
+
+
 def evaluate_oracle_stage(
     stage: dict[str, Any],
     *,
@@ -565,6 +759,7 @@ def evaluate_oracle_stage(
             f"{label}: nonblack coverage delta ratio "
             f"{diff['nonblack_delta_ratio']:.4f} > {max_nonblack_delta_ratio:.4f}"
         )
+    failures.extend(strict_source_state_failures(stage))
     return failures
 
 
@@ -847,13 +1042,23 @@ def _section_diff(gbemu: list[int], pyboy: list[int], start: int, end: int) -> d
 
 
 def compare_source_states(gbemu: dict[str, Any], pyboy: dict[str, Any]) -> dict[str, Any]:
-    stable_registers = [0xFF40, 0xFF42, 0xFF43, 0xFF4A, 0xFF4B, 0xFF4F]
+    stable_registers = [0xFF40, 0xFF42, 0xFF43, 0xFF4A, 0xFF4B, 0xFF4F, 0xFF6C]
     timing_registers = [0xFF41, 0xFF44, 0xFF55]
+    register_compare_masks = {
+        0xFF4F: 0x01,
+        0xFF6C: 0x01,
+    }
     register_values = {
         f"{address:04X}": {
             "gbemu": gbemu["io"][address],
             "pyboy": pyboy["io"][address],
-            "equal": gbemu["io"][address] == pyboy["io"][address],
+            "mask": register_compare_masks.get(address, 0xFF),
+            "gbemu_compare": gbemu["io"][address] & register_compare_masks.get(address, 0xFF),
+            "pyboy_compare": pyboy["io"][address] & register_compare_masks.get(address, 0xFF),
+            "equal": (
+                gbemu["io"][address] & register_compare_masks.get(address, 0xFF)
+            )
+            == (pyboy["io"][address] & register_compare_masks.get(address, 0xFF)),
         }
         for address in stable_registers + timing_registers
     }
@@ -865,30 +1070,41 @@ def compare_source_states(gbemu: dict[str, Any], pyboy: dict[str, Any]) -> dict[
         "bank1_attrs_9800": _section_diff(gbemu["vram1"], pyboy["vram1"], 0x1800, 0x1C00),
         "bank1_attrs_9c00": _section_diff(gbemu["vram1"], pyboy["vram1"], 0x1C00, 0x2000),
     }
+    oam = _section_diff(gbemu["oam"], pyboy["oam"], 0, 0xA0)
+    palette_ram = {
+        "bg_palette_ram": _section_diff(gbemu["bg_palette_ram"], pyboy["bg_palette_ram"], 0, 64),
+        "obj_palette_ram": _section_diff(gbemu["obj_palette_ram"], pyboy["obj_palette_ram"], 0, 64),
+    }
     non_suspects = {
         "stable_lcdc_scroll_window_registers_equal": all(
             register_values[f"{address:04X}"]["equal"] for address in stable_registers
         ),
-        "oam_equal": gbemu["oam"] == pyboy["oam"],
-        "bg_palette_ram_equal": gbemu["bg_palette_ram"] == pyboy["bg_palette_ram"],
-        "obj_palette_ram_equal": gbemu["obj_palette_ram"] == pyboy["obj_palette_ram"],
+        "oam_equal": oam["equal"],
+        "bg_palette_ram_equal": palette_ram["bg_palette_ram"]["equal"],
+        "obj_palette_ram_equal": palette_ram["obj_palette_ram"]["equal"],
         "bank1_attribute_maps_equal": (
             vram_sections["bank1_attrs_9800"]["equal"]
             and vram_sections["bank1_attrs_9c00"]["equal"]
         ),
     }
     suspect = "unknown"
-    if (
+    if not palette_ram["bg_palette_ram"]["equal"] or not palette_ram["obj_palette_ram"]["equal"]:
+        suspect = "palette"
+    elif (
         not vram_sections["bank0_tiledata"]["equal"]
         or not vram_sections["bank0_bg_map_9800"]["equal"]
     ):
         suspect = "bank0_vram_tiledata_or_bg_map_timing"
+    elif not oam["equal"]:
+        suspect = "oam_timing"
     elif not register_values["FF44"]["equal"] or not register_values["FF41"]["equal"]:
         suspect = "lcd_timing_phase"
     return {
         "register_values": register_values,
         "non_suspects": non_suspects,
         "vram_sections": vram_sections,
+        "palette_ram": palette_ram,
+        "oam": oam,
         "suspect_class": suspect,
     }
 
@@ -1112,6 +1328,52 @@ def capture_pyboy_cgb_state(pyboy: Any) -> dict[str, Any]:
     }
 
 
+def capture_pyboy_cgb_state_preserving(pyboy: Any) -> dict[str, Any]:
+    state = io.BytesIO()
+    pyboy.save_state(state)
+    captured = capture_pyboy_cgb_state(pyboy)
+    state.seek(0)
+    pyboy.load_state(state)
+    return captured
+
+
+def pyboy_run_kwargs(save_file: Path | None, *, rtc_now: float | None) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "window": "null",
+        "sound_emulated": False,
+        "cgb": True,
+    }
+    if save_file is not None:
+        kwargs["ram_file"] = io.BytesIO(save_file.read_bytes())
+        # The emulated RTC value is pinned by rtc_now. PyBoy's file format is a
+        # host-time epoch, so this anchor compensates for PyBoy's own clock read.
+        rtc_file = load_pyboy_rtc_file(save_file, now=rtc_now, host_now=time.time())
+        if rtc_file is not None:
+            kwargs["rtc_file"] = rtc_file
+    return kwargs
+
+
+def force_pyboy_cgb_post_boot(pyboy: Any) -> None:
+    """Match GBemu's CGB no-boot startup before PyBoy starts ticking frames."""
+
+    pyboy.memory[0xFF50] = 0x01
+    registers = pyboy.register_file
+    registers.A = 0x11
+    registers.F = 0x80
+    registers.B = 0x00
+    registers.C = 0x00
+    registers.D = 0xFF
+    registers.E = 0x56
+    registers.HL = 0x000D
+    registers.SP = 0xFFFE
+    registers.PC = 0x0100
+
+    pyboy.memory[0xFF04] = 0x00
+    pyboy.memory[0xFFFF] = 0x00
+    for address, value in PYBOY_CGB_POST_BOOT_IO_DEFAULTS.items():
+        pyboy.memory[address] = value
+
+
 def run_gbemu_stages(
     *,
     rom: Path,
@@ -1121,8 +1383,19 @@ def run_gbemu_stages(
     min_unique_rgb_colors: int,
     source_debug_checkpoints: set[int],
     save_file: Path | None,
+    rtc_now: float | None,
+    frame_clock: Literal["cpu", "ppu"],
+    input_clock: Literal["wall", "ppu"],
 ) -> list[dict[str, Any]]:
-    cartridge = Cartridge.from_file(rom)
+    if frame_clock not in {"cpu", "ppu"}:
+        raise ValueError(f"unknown GBemu frame clock: {frame_clock!r}")
+    if input_clock not in {"wall", "ppu"}:
+        raise ValueError(f"unknown GBemu input clock: {input_clock!r}")
+    cartridge = (
+        Cartridge(rom.read_bytes(), rom, rtc_time_provider=lambda: rtc_now)
+        if rtc_now is not None
+        else Cartridge.from_file(rom)
+    )
     emulator = Emulator(cartridge, serial_sink=lambda _: None, mode="cgb")
     if save_file is not None:
         emulator.load_save_file(save_file)
@@ -1132,13 +1405,19 @@ def run_gbemu_stages(
     for checkpoint in checkpoint_frames:
         while wall_frame < checkpoint:
             if button_script is not None:
-                emulator.set_buttons(button_script.buttons_for_frame(wall_frame, set()))
-            target_cycles = (wall_frame + 1) * DOTS_PER_FRAME
-            emulator.cpu.run(
-                stop_condition=lambda target_cycles=target_cycles: (
-                    emulator.cpu.cycles >= target_cycles
+                input_frame = (
+                    emulator.bus.ppu.frame_count if input_clock == "ppu" else wall_frame
                 )
-            )
+                emulator.set_buttons(button_script.buttons_for_frame(input_frame, set()))
+            if frame_clock == "cpu":
+                target_cycles = (wall_frame + 1) * DOTS_PER_FRAME
+                emulator.cpu.run(
+                    stop_condition=lambda target_cycles=target_cycles: (
+                        emulator.cpu.cycles >= target_cycles
+                    )
+                )
+            else:
+                emulator.run(max_frames=1)
             wall_frame += 1
         metrics = collect_crystal_stage_metrics(
             emulator,
@@ -1148,7 +1427,14 @@ def run_gbemu_stages(
             frame_output_dir=None,
         )
         metrics["oracle_wall_frame"] = checkpoint
-        metrics["oracle_cpu_cycle_target"] = checkpoint * DOTS_PER_FRAME
+        metrics["oracle_gbemu_frame_clock"] = frame_clock
+        metrics["oracle_gbemu_input_clock"] = input_clock
+        metrics["oracle_cpu_cycle_target"] = (
+            checkpoint * DOTS_PER_FRAME if frame_clock == "cpu" else None
+        )
+        metrics["oracle_ppu_frame_target"] = checkpoint if frame_clock == "ppu" else None
+        metrics["oracle_actual_cpu_cycles"] = emulator.cpu.cycles
+        metrics["oracle_actual_ppu_frame"] = emulator.bus.ppu.frame_count
         require_attributes = checkpoint >= attribute_checkpoint_frame
         require_color_variety = stage_requires_color_variety(
             checkpoint,
@@ -1196,22 +1482,18 @@ def run_pyboy_stages(
     button_script: ButtonScript | None,
     source_debug_checkpoints: set[int],
     save_file: Path | None,
+    rtc_now: float | None,
 ) -> dict[int, dict[str, Any]]:
     from pyboy import PyBoy
 
-    pyboy_kwargs: dict[str, Any] = {
-        "window": "null",
-        "sound_emulated": False,
-        "cgb": True,
-    }
-    if save_file is not None:
-        pyboy_kwargs["ram_file"] = io.BytesIO(save_file.read_bytes())
-    pyboy = PyBoy(str(rom), **pyboy_kwargs)
-    pyboy.set_emulation_speed(0)
+    pyboy = None
     checkpoints = set(checkpoint_frames)
     captures: dict[int, dict[str, Any]] = {}
     pressed: set[str] = set()
     try:
+        pyboy = PyBoy(str(rom), **pyboy_run_kwargs(save_file, rtc_now=rtc_now))
+        force_pyboy_cgb_post_boot(pyboy)
+        pyboy.set_emulation_speed(0)
         for frame in range(max(checkpoint_frames)):
             target = (
                 button_script.buttons_for_frame(frame, set())
@@ -1225,13 +1507,52 @@ def run_pyboy_stages(
                 captures[rendered_frame] = {
                     "image": pyboy.screen.image.convert("RGB"),
                     "cycles": pyboy._cycles(),
-                    "source_state": capture_pyboy_cgb_state(pyboy)
-                    if rendered_frame in source_debug_checkpoints
-                    else None,
+                    "source_state": None,
                 }
     finally:
-        pyboy.stop(save=False)
+        if pyboy is not None:
+            pyboy.stop(save=False)
+    if source_debug_checkpoints:
+        for checkpoint in sorted(checkpoints & source_debug_checkpoints):
+            if checkpoint in captures:
+                captures[checkpoint]["source_state"] = run_pyboy_source_state_checkpoint(
+                    rom=rom,
+                    checkpoint=checkpoint,
+                    button_script=button_script,
+                    save_file=save_file,
+                    rtc_now=rtc_now,
+                )
     return captures
+
+
+def run_pyboy_source_state_checkpoint(
+    *,
+    rom: Path,
+    checkpoint: int,
+    button_script: ButtonScript | None,
+    save_file: Path | None,
+    rtc_now: float | None,
+) -> dict[str, Any]:
+    from pyboy import PyBoy
+
+    pyboy = None
+    pressed: set[str] = set()
+    try:
+        pyboy = PyBoy(str(rom), **pyboy_run_kwargs(save_file, rtc_now=rtc_now))
+        force_pyboy_cgb_post_boot(pyboy)
+        pyboy.set_emulation_speed(0)
+        for frame in range(checkpoint):
+            target = (
+                button_script.buttons_for_frame(frame, set())
+                if button_script is not None
+                else set()
+            )
+            pressed = apply_pyboy_buttons(pyboy, pressed, target)
+            pyboy.tick(1, render=True)
+        return capture_pyboy_cgb_state(pyboy)
+    finally:
+        if pyboy is not None:
+            pyboy.stop(save=False)
 
 
 def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
@@ -1254,6 +1575,8 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
     save_file, save_file_source = resolve_oracle_save_file(args, scenario)
     if save_file is not None and not save_file.exists():
         raise ValueError(f"save file not found: {save_file}")
+    rtc_file = _rtc_sidecar_path(save_file) if save_file is not None else None
+    rtc_now = load_oracle_rtc_now(save_file)
 
     gbemu_stages = run_gbemu_stages(
         rom=args.rom,
@@ -1263,6 +1586,9 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
         min_unique_rgb_colors=args.min_unique_rgb_colors,
         source_debug_checkpoints=source_debug_checkpoints,
         save_file=save_file,
+        rtc_now=rtc_now,
+        frame_clock=scenario.gbemu_frame_clock,
+        input_clock=scenario.gbemu_input_clock,
     )
     pyboy_images = run_pyboy_stages(
         rom=args.rom,
@@ -1270,6 +1596,7 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
         button_script=button_script,
         source_debug_checkpoints=source_debug_checkpoints,
         save_file=save_file,
+        rtc_now=rtc_now,
     )
 
     failures: list[str] = []
@@ -1312,6 +1639,10 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
             "pyboy_cycles": pyboy_capture["cycles"],
             "diff": diff_metrics,
             "images": image_paths,
+            "source_debug_required": checkpoint in source_debug_checkpoints,
+            "strict_source_state_required": (
+                args.strict_source_state and checkpoint in source_debug_checkpoints
+            ),
         }
         if checkpoint in source_debug_checkpoints:
             gbemu_source_state = gbemu_stage.get("source_state")
@@ -1344,8 +1675,11 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
         "rom": str(args.rom),
         "save_file": None if save_file is None else str(save_file),
         "save_file_source": save_file_source,
+        "rtc_file": None if rtc_file is None or not rtc_file.exists() else str(rtc_file),
+        "rtc_now": rtc_now,
         "checkpoint_frames": checkpoint_frames,
         "source_debug_checkpoints": sorted(source_debug_checkpoints),
+        "strict_source_state": args.strict_source_state,
         "button_script": (
             None
             if button_script is None
@@ -1367,6 +1701,9 @@ def run_oracle(args: argparse.Namespace) -> dict[str, Any]:
             else "scenario"
         ),
         "button_script_final_frame": None if button_script is None else button_script.final_frame,
+        "gbemu_frame_clock": scenario.gbemu_frame_clock,
+        "gbemu_input_clock": scenario.gbemu_input_clock,
+        "pyboy_boot_mode": "forced_cgb_post_boot",
         "thresholds": {
             "major_delta_threshold": args.major_delta_threshold,
             "max_major_diff_ratio": args.max_major_diff_ratio,

@@ -4179,15 +4179,7 @@ class CPU:
             self._add_cycles(4)
             self.pc = (self.pc + 1) & 0xFFFF
             address = lo | (hi << 8)
-            bus = self.bus
-            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
-                self.a = bus.wram[address - 0xC000]
-            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
-                self.a = bus.wram[address - 0xE000]
-            elif 0xFF80 <= address <= 0xFFFE:
-                self.a = bus.hram[address - 0xFF80]
-            else:
-                self.a = bus.read8(address)
+            self.a = self._read8_fast(address)
             self._add_cycles(4)
             return 16
         if opcode == 0xEA:
@@ -4208,15 +4200,7 @@ class CPU:
             self._add_cycles(4)
             self.pc = (self.pc + 1) & 0xFFFF
             address = lo | (hi << 8)
-            bus = self.bus
-            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
-                bus.wram[address - 0xC000] = self.a
-            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
-                bus.wram[address - 0xE000] = self.a
-            elif 0xFF80 <= address <= 0xFFFE:
-                bus.hram[address - 0xFF80] = self.a
-            else:
-                bus.write8(address, self.a)
+            self._write8_fast(address, self.a)
             self._add_cycles(4)
             return 16
         if opcode == 0x20:
@@ -4418,15 +4402,7 @@ class CPU:
             return 4
         if opcode == 0x7E:
             address = (self.h << 8) | self.l
-            bus = self.bus
-            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
-                self.a = bus.wram[address - 0xC000]
-            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
-                self.a = bus.wram[address - 0xE000]
-            elif 0xFF80 <= address <= 0xFFFE:
-                self.a = bus.hram[address - 0xFF80]
-            else:
-                self.a = bus.read8(address)
+            self.a = self._read8_fast(address)
             self._add_cycles(4)
             return 8
         if opcode == 0x3C:
@@ -4520,41 +4496,17 @@ class CPU:
             return 8
         if opcode == 0x77:
             address = (self.h << 8) | self.l
-            bus = self.bus
-            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
-                bus.wram[address - 0xC000] = self.a
-            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
-                bus.wram[address - 0xE000] = self.a
-            elif 0xFF80 <= address <= 0xFFFE:
-                bus.hram[address - 0xFF80] = self.a
-            else:
-                bus.write8(address, self.a)
+            self._write8_fast(address, self.a)
             self._add_cycles(4)
             return 8
         if opcode == 0x72:
             address = (self.h << 8) | self.l
-            bus = self.bus
-            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
-                bus.wram[address - 0xC000] = self.d
-            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
-                bus.wram[address - 0xE000] = self.d
-            elif 0xFF80 <= address <= 0xFFFE:
-                bus.hram[address - 0xFF80] = self.d
-            else:
-                bus.write8(address, self.d)
+            self._write8_fast(address, self.d)
             self._add_cycles(4)
             return 8
         if opcode == 0x73:
             address = (self.h << 8) | self.l
-            bus = self.bus
-            if not bus._oam_dma_active and 0xC000 <= address <= 0xDFFF:
-                bus.wram[address - 0xC000] = self.e
-            elif not bus._oam_dma_active and 0xE000 <= address <= 0xFDFF:
-                bus.wram[address - 0xE000] = self.e
-            elif 0xFF80 <= address <= 0xFFFE:
-                bus.hram[address - 0xFF80] = self.e
-            else:
-                bus.write8(address, self.e)
+            self._write8_fast(address, self.e)
             self._add_cycles(4)
             return 8
         if opcode == 0x07:
