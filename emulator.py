@@ -150,8 +150,8 @@ class Emulator:
         )
         self.cpu = CPU(self.bus, start_pc=self._start_pc, post_boot=self._post_boot)
 
-    def drain_audio_samples(self) -> list[AudioSample]:
-        return self.bus.apu.drain_audio_samples()
+    def drain_audio_samples(self, *, flush: bool = True) -> list[AudioSample]:
+        return self.bus.apu.drain_audio_samples(flush=flush)
 
     def save_ram_data(self) -> bytes:
         return self.cartridge.dump_ram()

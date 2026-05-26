@@ -188,6 +188,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF1D, 0xFF)
         bus.write8(0xFF1E, 0x87)
         bus.tick(8)
+        bus.apu._flush_pending_output_cycles()
 
         self.assertEqual(bus.apu.wave_position, 1)
         self.assertEqual(bus.read8(0xFF3F), 0x9A)
@@ -208,6 +209,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF1D, 0xFF)
         bus.write8(0xFF1E, 0x87)
         bus.tick(8)
+        bus.apu._flush_pending_output_cycles()
 
         self.assertEqual(bus.apu.wave_sample_buffer, 0x0A)
         bus.write8(0xFF30, 0x45)
@@ -225,6 +227,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF1D, 0xFF)
         bus.write8(0xFF1E, 0x87)
         bus.tick(20)
+        bus.apu._flush_pending_output_cycles()
 
         self.assertEqual(bus.apu.wave_position, 7)
         bus.write8(0xFF1E, 0x87)
@@ -263,6 +266,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF1D, 0xFF)
         bus.write8(0xFF1E, 0x87)
         bus.tick(12)
+        bus.apu._flush_pending_output_cycles()
 
         self.assertEqual(bus.apu.wave_position, 3)
         bus.write8(0xFF1E, 0x87)
@@ -681,6 +685,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF14, 0x87)
 
         bus.tick(10)
+        bus.apu._flush_pending_output_cycles()
 
         self.assertEqual(bus.apu.duty_positions[0], 2)
         self.assertEqual(bus.apu.frequency_timers[0], 2)
@@ -698,8 +703,10 @@ class APUTests(unittest.TestCase):
 
         self.assertEqual(bus.apu.frequency_timers[0], 6)
         bus.tick(5)
+        bus.apu._flush_pending_output_cycles()
         self.assertEqual(bus.apu.duty_positions[0], 0)
         bus.tick(1)
+        bus.apu._flush_pending_output_cycles()
         self.assertEqual(bus.apu.duty_positions[0], 1)
 
         bus.apu.frequency_timers[1] = 7
@@ -726,14 +733,17 @@ class APUTests(unittest.TestCase):
         self.assertEqual(bus.apu.wave_position, 0)
 
         bus.tick(7)
+        bus.apu._flush_pending_output_cycles()
         self.assertEqual(bus.apu.wave_position, 0)
 
         bus.tick(1)
+        bus.apu._flush_pending_output_cycles()
 
         self.assertEqual(bus.apu.wave_position, 1)
         self.assertEqual(bus.apu.sample_channels()[2], 12)
 
         bus.tick(2)
+        bus.apu._flush_pending_output_cycles()
 
         self.assertEqual(bus.apu.wave_position, 2)
         self.assertEqual(bus.apu.sample_channels()[2], 9)
@@ -751,6 +761,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF1E, 0x87)
 
         bus.tick(11)
+        bus.apu._flush_pending_output_cycles()
 
         self.assertEqual(bus.apu.wave_position, 2)
         self.assertEqual(bus.apu.frequency_timers[2], 1)
@@ -769,6 +780,7 @@ class APUTests(unittest.TestCase):
         bus.write8(0xFF1E, 0x87)
 
         bus.tick(8)
+        bus.apu._flush_pending_output_cycles()
 
         self.assertEqual(bus.apu.wave_position, 1)
         self.assertEqual(bus.apu.wave_sample_buffer, 12)
@@ -803,8 +815,10 @@ class APUTests(unittest.TestCase):
         initial_lfsr = bus.apu.noise_lfsr
 
         bus.tick(7)
+        bus.apu._flush_pending_output_cycles()
         self.assertEqual(bus.apu.noise_lfsr, initial_lfsr)
         bus.tick(1)
+        bus.apu._flush_pending_output_cycles()
 
         self.assertNotEqual(bus.apu.noise_lfsr, initial_lfsr)
 
@@ -834,6 +848,7 @@ class APUTests(unittest.TestCase):
         initial_lfsr = bus.apu.noise_lfsr
 
         bus.tick(8)
+        bus.apu._flush_pending_output_cycles()
 
         self.assertEqual(bus.apu.noise_lfsr, initial_lfsr)
         self.assertEqual(bus.apu._pending_noise_cycles, 8)
@@ -1067,6 +1082,30 @@ class APUTests(unittest.TestCase):
 
         self.assertEqual(bus.apu.drain_audio_samples(), [])
         self.assertEqual(bus.apu.frame_sequence_step, 1)
+
+    def test_bus_output_disabled_flushes_deferred_core_before_register_read(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x80)
+
+        bus.tick(FRAME_SEQUENCER_PERIOD - 4)
+
+        self.assertEqual(bus.apu._pending_core_cycles, FRAME_SEQUENCER_PERIOD - 4)
+        self.assertEqual(bus.apu._frame_sequence_counter, 0)
+
+        bus.read8(0xFF26)
+
+        self.assertEqual(bus.apu._pending_core_cycles, 0)
+        self.assertEqual(bus.apu._frame_sequence_counter, FRAME_SEQUENCER_PERIOD - 4)
+
+    def test_bus_deferred_core_flushes_before_enabling_output(self) -> None:
+        bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)
+        bus.write8(0xFF26, 0x80)
+
+        bus.tick(FRAME_SEQUENCER_PERIOD - 4)
+        bus.apu.set_output_enabled(True)
+
+        self.assertEqual(bus.apu._pending_core_cycles, 0)
+        self.assertEqual(bus.apu._frame_sequence_counter, FRAME_SEQUENCER_PERIOD - 4)
 
     def test_apu_profile_reports_samples_and_register_activity(self) -> None:
         bus = Bus(Cartridge(make_rom()), serial_sink=lambda _: None)

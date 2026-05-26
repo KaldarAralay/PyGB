@@ -193,7 +193,7 @@ class Bus:
     def cpu_cycles_for_device_cycles(self, device_cycles: int) -> int:
         if device_cycles <= 0:
             return 0
-        if not self._double_speed_timing_active:
+        if self.mode != EmulationMode.CGB or not (self.io[0x4D] & 0x80):
             return device_cycles
         return max(1, device_cycles * 2 - self._normal_speed_cycle_remainder)
 
@@ -404,10 +404,10 @@ class Bus:
         apu = self.apu
         if apu.output_enabled:
             apu._pending_output_cycles += device_cycles
-            if apu._pending_output_cycles >= apu._cycles_until_subsample:
+            if apu._pending_output_cycles >= apu._output_batch_cycles:
                 apu._process_pending_output_cycles(flush=False)
         else:
-            apu._advance_core(device_cycles)
+            apu._defer_core_cycles(device_cycles)
         if self._oam_dma_requested:
             self._begin_oam_dma()
 
@@ -546,7 +546,7 @@ class Bus:
     def _consume_normal_speed_cycles(self, cycles: int) -> int:
         if cycles <= 0:
             return 0
-        if not self._double_speed_timing_active:
+        if self.mode != EmulationMode.CGB or not (self.io[0x4D] & 0x80):
             self._normal_speed_cycle_remainder = 0
             return cycles
         total = self._normal_speed_cycle_remainder + cycles

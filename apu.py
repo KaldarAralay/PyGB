@@ -11,6 +11,7 @@ DEFAULT_SAMPLE_RATE = 44_100
 DEFAULT_AUDIO_BUFFER_LIMIT = DEFAULT_SAMPLE_RATE
 DMG_HIGH_PASS_CHARGE_FACTOR = 0.999958
 AUDIO_OVERSAMPLE_FACTOR = 2
+AUDIO_OUTPUT_BATCH_SUBSAMPLES = 64
 
 NR52 = 0x26
 NR50 = 0x24
@@ -184,7 +185,12 @@ class APU:
         self._output_subsample_rate = self.sample_rate * AUDIO_OVERSAMPLE_FACTOR
         self._sample_cycle_accumulator = 0
         self._pending_output_cycles = 0
+        self._pending_core_cycles = 0
         self._cycles_until_subsample = self._cycles_until_next_subsample()
+        self._output_batch_cycles = max(
+            self._cycles_until_subsample,
+            self._output_process_batch_cycles_for_rate(),
+        )
         if audio_buffer_limit <= 0:
             raise ValueError("APU audio buffer limit must be positive")
         self._audio_buffer_limit = audio_buffer_limit
@@ -320,21 +326,59 @@ class APU:
             return
         self._advance_core(cycles)
 
+    def _defer_core_cycles(self, cycles: int) -> None:
+        if cycles <= 0:
+            return
+        self._pending_core_cycles += cycles
+        if self._pending_core_cycles >= self._cycles_until_next_core_event():
+            self._flush_pending_core_cycles()
+
+    def _cycles_until_next_core_event(self) -> int:
+        if not self.powered:
+            return FRAME_SEQUENCER_PERIOD
+        remaining = FRAME_SEQUENCER_PERIOD - self._frame_sequence_counter
+        return remaining if remaining > 0 else 1
+
+    def _flush_pending_core_cycles(self) -> None:
+        cycles = self._pending_core_cycles
+        if cycles <= 0:
+            return
+        self._pending_core_cycles = 0
+        self._advance_core(cycles)
+
     def _advance_core(self, cycles: int) -> None:
         if cycles <= 0:
             return
-        powered = self.powered
+        io = self.bus.io
+        powered = bool(io[NR52] & 0x80)
         if not powered:
             return
-        if powered:
-            if self._quiet_frequency_timers_can_skip():
-                if self._channel_output_enabled[3]:
-                    self._pending_noise_cycles += cycles
-            elif self._frequency_timers_can_fast_defer():
-                if self._channel_output_enabled[3]:
-                    self._pending_noise_cycles += cycles
-            else:
-                self._tick_frequency_timers(cycles)
+        enabled = self._channel_output_enabled
+        volumes = self.channel_volumes
+        envelopes = self._envelope_enabled
+        clock_ch0 = enabled[0] and (
+            volumes[0] > 0 or (envelopes[0] and io[0x12] & 0x08)
+        )
+        clock_ch1 = enabled[1] and (
+            volumes[1] > 0 or (envelopes[1] and io[0x17] & 0x08)
+        )
+        clock_ch2 = enabled[2]
+        nr42 = io[0x21]
+        defer_ch3 = enabled[3] and volumes[3] == 0 and not (
+            nr42 & 0x08 and nr42 & 0x07
+        )
+        clock_ch3 = enabled[3] and not defer_ch3
+        if clock_ch0 or clock_ch1 or clock_ch2 or clock_ch3 or defer_ch3:
+            self._tick_frequency_timers_selected(
+                cycles,
+                clock_ch0=bool(clock_ch0),
+                clock_ch1=bool(clock_ch1),
+                clock_ch2=bool(clock_ch2),
+                clock_ch3=bool(clock_ch3),
+                defer_ch3=bool(defer_ch3),
+                io=io,
+                timers=self.frequency_timers,
+            )
         self._frame_sequence_counter += cycles
         while self._frame_sequence_counter >= FRAME_SEQUENCER_PERIOD:
             self._frame_sequence_counter -= FRAME_SEQUENCER_PERIOD
@@ -437,7 +481,9 @@ class APU:
         self._flush_pending_output_cycles()
         return self._high_pass_filter_sample(self.mix_sample())
 
-    def drain_audio_samples(self) -> list[tuple[int, int]]:
+    def drain_audio_samples(self, *, flush: bool = True) -> list[tuple[int, int]]:
+        if flush:
+            self._flush_pending_output_cycles()
         samples = list(self._audio_samples)
         self._audio_samples.clear()
         return samples
@@ -582,10 +628,10 @@ class APU:
             return 0
         return 15 - (sample & 0x0F) * 2
 
-    def _high_pass_filter_sample(self, sample: tuple[int, int]) -> tuple[int, int]:
-        if not self._any_channel_dac_enabled():
+    def _high_pass_filter_values(self, left: int, right: int) -> tuple[int, int]:
+        io = self.bus.io
+        if not (((io[0x12] | io[0x17] | io[0x21]) & 0xF8) or (io[0x1A] & 0x80)):
             return (0, 0)
-        left, right = sample
         capacitors = self._high_pass_capacitors
         charge_factor = self._high_pass_charge_factor
         left_input = float(left)
@@ -595,6 +641,9 @@ class APU:
         capacitors[0] = left_input - left_output * charge_factor
         capacitors[1] = right_input - right_output * charge_factor
         return int(round(left_output)), int(round(right_output))
+
+    def _high_pass_filter_sample(self, sample: tuple[int, int]) -> tuple[int, int]:
+        return self._high_pass_filter_values(sample[0], sample[1])
 
     def _reset_high_pass_filter(self) -> None:
         self._high_pass_capacitors = [0.0, 0.0]
@@ -607,7 +656,12 @@ class APU:
     def _reset_output_timing(self) -> None:
         self._sample_cycle_accumulator = 0
         self._pending_output_cycles = 0
+        self._pending_core_cycles = 0
         self._cycles_until_subsample = self._cycles_until_next_subsample()
+        self._output_batch_cycles = max(
+            self._cycles_until_subsample,
+            self._output_process_batch_cycles_for_rate(),
+        )
 
     def _cycles_until_next_subsample(self) -> int:
         remaining = CPU_CLOCK_HZ - self._sample_cycle_accumulator
@@ -615,6 +669,12 @@ class APU:
             return 1
         subsample_rate = self._output_subsample_rate
         return max(1, (remaining + subsample_rate - 1) // subsample_rate)
+
+    def _output_process_batch_cycles_for_rate(self) -> int:
+        return max(
+            1,
+            CPU_CLOCK_HZ * AUDIO_OUTPUT_BATCH_SUBSAMPLES + self._output_subsample_rate - 1
+        ) // self._output_subsample_rate
 
     def _high_pass_charge_factor_for_sample_rate(self) -> float:
         return DMG_HIGH_PASS_CHARGE_FACTOR ** (CPU_CLOCK_HZ / self.sample_rate)
@@ -860,6 +920,29 @@ class APU:
         clock_ch3 = enabled[3] and not defer_ch3
         if not (clock_ch0 or clock_ch1 or clock_ch2 or clock_ch3 or defer_ch3):
             return
+        self._tick_frequency_timers_selected(
+            cycles,
+            clock_ch0=bool(clock_ch0),
+            clock_ch1=bool(clock_ch1),
+            clock_ch2=bool(clock_ch2),
+            clock_ch3=bool(clock_ch3),
+            defer_ch3=bool(defer_ch3),
+            io=io,
+            timers=timers,
+        )
+
+    def _tick_frequency_timers_selected(
+        self,
+        cycles: int,
+        *,
+        clock_ch0: bool,
+        clock_ch1: bool,
+        clock_ch2: bool,
+        clock_ch3: bool,
+        defer_ch3: bool,
+        io: bytearray,
+        timers: list[int],
+    ) -> None:
 
         if clock_ch0:
             period = io[0x13] | ((io[0x14] & 0x07) << 8)
@@ -1098,6 +1181,12 @@ class APU:
         sample_cycle_accumulator = self._sample_cycle_accumulator
         cycles_until_subsample = self._cycles_until_subsample
         powered = bool(self.bus.io[NR52] & 0x80)
+        fast_resample = AUDIO_OVERSAMPLE_FACTOR == 2
+        resample_sample_count = self._resample_sample_count
+        resample_left_accumulator = self._resample_left_accumulator
+        resample_right_accumulator = self._resample_right_accumulator
+        append_sample = self._append_audio_sample
+        high_pass_values = self._high_pass_filter_values
         while pending_cycles > 0:
             cycles_to_subsample = cycles_until_subsample
             if pending_cycles < cycles_to_subsample:
@@ -1119,7 +1208,27 @@ class APU:
             while sample_cycle_accumulator >= cpu_clock:
                 sample_cycle_accumulator -= cpu_clock
                 sample = mix_sample() if powered else (0, 0)
-                queue_sample(sample)
+                if fast_resample:
+                    left, right = sample
+                    if resample_sample_count == 0:
+                        resample_left_accumulator = left
+                        resample_right_accumulator = right
+                        resample_sample_count = 1
+                    else:
+                        left_total = resample_left_accumulator + left
+                        right_total = resample_right_accumulator + right
+                        left_average = left_total // 2
+                        right_average = right_total // 2
+                        if left_total & 1 and left_average & 1:
+                            left_average += 1
+                        if right_total & 1 and right_average & 1:
+                            right_average += 1
+                        resample_left_accumulator = 0
+                        resample_right_accumulator = 0
+                        resample_sample_count = 0
+                        append_sample(high_pass_values(left_average, right_average))
+                else:
+                    queue_sample(sample)
             remaining_cycles = cpu_clock - sample_cycle_accumulator
             cycles_until_subsample = (
                 1
@@ -1129,28 +1238,38 @@ class APU:
         self._sample_cycle_accumulator = sample_cycle_accumulator
         self._cycles_until_subsample = cycles_until_subsample
         self._pending_output_cycles = pending_cycles
+        if fast_resample:
+            self._resample_sample_count = resample_sample_count
+            self._resample_left_accumulator = resample_left_accumulator
+            self._resample_right_accumulator = resample_right_accumulator
 
     def _flush_pending_output_cycles(self) -> None:
-        self._process_pending_output_cycles(flush=True)
+        if self.output_enabled:
+            self._process_pending_output_cycles(flush=True)
+        else:
+            self._flush_pending_core_cycles()
 
     def _queue_resampler_sample(self, sample: tuple[int, int]) -> None:
         if AUDIO_OVERSAMPLE_FACTOR == 2:
+            left, right = sample
             if self._resample_sample_count == 0:
-                self._resample_left_accumulator = sample[0]
-                self._resample_right_accumulator = sample[1]
+                self._resample_left_accumulator = left
+                self._resample_right_accumulator = right
                 self._resample_sample_count = 1
                 return
 
-            left_total = self._resample_left_accumulator + sample[0]
-            right_total = self._resample_right_accumulator + sample[1]
+            left_total = self._resample_left_accumulator + left
+            right_total = self._resample_right_accumulator + right
             left_average = left_total // 2
             right_average = right_total // 2
             if left_total & 1 and left_average & 1:
                 left_average += 1
             if right_total & 1 and right_average & 1:
                 right_average += 1
-            self._reset_resampler()
-            self._append_audio_sample(self._high_pass_filter_sample((left_average, right_average)))
+            self._resample_left_accumulator = 0
+            self._resample_right_accumulator = 0
+            self._resample_sample_count = 0
+            self._append_audio_sample(self._high_pass_filter_values(left_average, right_average))
             return
 
         left_total = self._resample_left_accumulator + sample[0]
@@ -1165,7 +1284,9 @@ class APU:
             int(round(left_total / sample_count)),
             int(round(right_total / sample_count)),
         )
-        self._reset_resampler()
+        self._resample_left_accumulator = 0
+        self._resample_right_accumulator = 0
+        self._resample_sample_count = 0
         self._append_audio_sample(self._high_pass_filter_sample(averaged_sample))
 
     def _append_audio_sample(self, sample: tuple[int, int]) -> None:

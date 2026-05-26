@@ -106,7 +106,7 @@ class FakeEmulator:
     def reset(self) -> None:
         self.reset_count += 1
 
-    def drain_audio_samples(self) -> list[tuple[int, int]]:
+    def drain_audio_samples(self, *, flush: bool = True) -> list[tuple[int, int]]:
         samples = list(self.audio_samples)
         self.audio_samples.clear()
         return samples

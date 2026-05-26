@@ -604,6 +604,7 @@ class CartridgeBusTests(unittest.TestCase):
 
         self.assertEqual(bus.read8(0xFF05), 0x01)
         self.assertEqual(bus.ppu.line_dots, 8)
+        bus.apu._flush_pending_output_cycles()
         self.assertEqual(bus.apu._frame_sequence_counter, apu_counter + 8)
 
         bus.write8(0xFF01, ord("Z"))

@@ -57,6 +57,10 @@ DMG_GRAYSCALE = (
 )
 RGB_PIXEL_FLAG = 0x01000000
 RGB_PIXEL_MASK = 0x00FFFFFF
+BOOL_RUNS_8 = {
+    False: (False, False, False, False, False, False, False, False),
+    True: (True, True, True, True, True, True, True, True),
+}
 
 
 def rgb_to_framebuffer_pixel(red: int, green: int, blue: int) -> int:
@@ -105,6 +109,57 @@ def _decoded_tile_row(
         (hi & 1) << 1 | (lo & 1),
     )
     return color_ids, tuple(shades[color_id] for color_id in color_ids)
+
+
+@lru_cache(maxsize=1024)
+def _decoded_tile_color_ids(
+    lo: int,
+    hi: int,
+) -> tuple[int, int, int, int, int, int, int, int]:
+    return (
+        ((hi >> 7) & 1) << 1 | ((lo >> 7) & 1),
+        ((hi >> 6) & 1) << 1 | ((lo >> 6) & 1),
+        ((hi >> 5) & 1) << 1 | ((lo >> 5) & 1),
+        ((hi >> 4) & 1) << 1 | ((lo >> 4) & 1),
+        ((hi >> 3) & 1) << 1 | ((lo >> 3) & 1),
+        ((hi >> 2) & 1) << 1 | ((lo >> 2) & 1),
+        ((hi >> 1) & 1) << 1 | ((lo >> 1) & 1),
+        (hi & 1) << 1 | (lo & 1),
+    )
+
+
+@lru_cache(maxsize=65536)
+def _decoded_cgb_tile_row(
+    lo: int,
+    hi: int,
+    attrs: int,
+    p0: int,
+    p1: int,
+    p2: int,
+    p3: int,
+    p4: int,
+    p5: int,
+    p6: int,
+    p7: int,
+) -> tuple[
+    tuple[int, int, int, int, int, int, int, int],
+    tuple[int, int, int, int, int, int, int, int],
+    bool,
+]:
+    color_ids = _decoded_tile_color_ids(lo, hi)
+    if attrs & CGB_ATTR_X_FLIP:
+        color_ids = color_ids[::-1]
+    palette_pixels = (
+        _rgb555_to_framebuffer_pixel(p0, p1),
+        _rgb555_to_framebuffer_pixel(p2, p3),
+        _rgb555_to_framebuffer_pixel(p4, p5),
+        _rgb555_to_framebuffer_pixel(p6, p7),
+    )
+    return (
+        color_ids,
+        tuple(palette_pixels[color_id] for color_id in color_ids),
+        bool(attrs & CGB_ATTR_PRIORITY),
+    )
 
 
 @dataclass(frozen=True)
@@ -2020,6 +2075,19 @@ class PPU:
         map_base: int,
         scx: int,
     ) -> None:
+        if not self._line_bg_tile_map_scy:
+            self._render_cgb_background_line_fast(
+                state,
+                y,
+                row,
+                bg_color_ids,
+                bg_priorities,
+                start_x,
+                end_x,
+                map_base,
+                scx,
+            )
+            return
         if self.profile_enabled:
             self._profile_bg_slow_pixels += end_x - start_x
         for screen_x in range(start_x, end_x):
@@ -2048,6 +2116,18 @@ class PPU:
         wx: int,
         reactivation_glitch_x: int | None,
     ) -> None:
+        if reactivation_glitch_x is None and not self._line_bg_tile_map_scy:
+            self._render_cgb_window_line_fast(
+                state,
+                row,
+                bg_color_ids,
+                bg_priorities,
+                start_x,
+                end_x,
+                map_base,
+                wx,
+            )
+            return
         if self.profile_enabled:
             self._profile_window_slow_pixels += end_x - start_x
         for screen_x in range(start_x, end_x):
@@ -2105,6 +2185,35 @@ class PPU:
             end_x,
         )
 
+    def _render_cgb_background_line_fast(
+        self,
+        state: PPURenderState,
+        y: int,
+        row: list[int],
+        bg_color_ids: list[int],
+        bg_priorities: list[bool],
+        start_x: int,
+        end_x: int,
+        map_base: int,
+        scx: int,
+    ) -> None:
+        if self.profile_enabled:
+            self._profile_bg_fast_pixels += end_x - start_x
+        bg_y = (y + state.scy) & 0xFF
+        tile_y = bg_y & 0x07
+        map_row_base = map_base + ((bg_y >> 3) * 32)
+        self._render_cgb_scrolled_tilemap_span_fast(
+            state.lcdc,
+            map_row_base,
+            tile_y,
+            scx,
+            row,
+            bg_color_ids,
+            bg_priorities,
+            start_x,
+            end_x,
+        )
+
     def _render_window_line_fast(
         self,
         state: PPURenderState,
@@ -2127,6 +2236,33 @@ class PPU:
             wx,
             row,
             bg_color_ids,
+            start_x,
+            end_x,
+        )
+
+    def _render_cgb_window_line_fast(
+        self,
+        state: PPURenderState,
+        row: list[int],
+        bg_color_ids: list[int],
+        bg_priorities: list[bool],
+        start_x: int,
+        end_x: int,
+        map_base: int,
+        wx: int,
+    ) -> None:
+        if self.profile_enabled:
+            self._profile_window_fast_pixels += end_x - start_x
+        tile_y = state.window_line & 0x07
+        map_row_base = map_base + (((state.window_line & 0xFF) >> 3) * 32)
+        self._render_cgb_unscrolled_tilemap_span_fast(
+            state.lcdc,
+            map_row_base,
+            tile_y,
+            wx,
+            row,
+            bg_color_ids,
+            bg_priorities,
             start_x,
             end_x,
         )
@@ -2239,6 +2375,120 @@ class PPU:
                 bg_color_ids[x : x + span] = color_ids[bit_offset:span_end]
                 row[x : x + span] = shade_pixels[bit_offset:span_end]
             x += span
+
+    def _render_cgb_scrolled_tilemap_span_fast(
+        self,
+        lcdc: int,
+        map_row_base: int,
+        tile_y: int,
+        scx: int,
+        row: list[int],
+        bg_color_ids: list[int],
+        bg_priorities: list[bool],
+        start_x: int,
+        end_x: int,
+    ) -> None:
+        vram = self.bus.vram
+        x = start_x
+        render_span = self._render_cgb_tile_span_fast
+        while x < end_x:
+            bg_x = (x + scx) & 0xFF
+            span = min(end_x - x, 8 - (bg_x & 0x07))
+            render_span(
+                lcdc,
+                vram,
+                map_row_base + (bg_x >> 3),
+                tile_y,
+                bg_x & 0x07,
+                span,
+                row,
+                bg_color_ids,
+                bg_priorities,
+                x,
+            )
+            x += span
+
+    def _render_cgb_unscrolled_tilemap_span_fast(
+        self,
+        lcdc: int,
+        map_row_base: int,
+        tile_y: int,
+        origin_x: int,
+        row: list[int],
+        bg_color_ids: list[int],
+        bg_priorities: list[bool],
+        start_x: int,
+        end_x: int,
+    ) -> None:
+        vram = self.bus.vram
+        x = start_x
+        render_span = self._render_cgb_tile_span_fast
+        while x < end_x:
+            wrapped_x = (x - origin_x) & 0xFF
+            span = min(end_x - x, 8 - (wrapped_x & 0x07))
+            render_span(
+                lcdc,
+                vram,
+                map_row_base + (wrapped_x >> 3),
+                tile_y,
+                wrapped_x & 0x07,
+                span,
+                row,
+                bg_color_ids,
+                bg_priorities,
+                x,
+            )
+            x += span
+
+    def _render_cgb_tile_span_fast(
+        self,
+        lcdc: int,
+        vram: bytearray,
+        tile_map_index: int,
+        tile_y: int,
+        bit_offset: int,
+        span: int,
+        row: list[int],
+        bg_color_ids: list[int],
+        bg_priorities: list[bool],
+        x: int,
+    ) -> None:
+        tile_id = vram[tile_map_index]
+        attrs = vram[0x2000 + tile_map_index]
+        tile_y_pixel = 7 - tile_y if attrs & CGB_ATTR_Y_FLIP else tile_y
+        tile_y_offset = tile_y_pixel * 2
+        if lcdc & LCDC_BG_WINDOW_TILE_DATA:
+            tile_address = tile_id * 16 + tile_y_offset
+        else:
+            signed_id = tile_id - 0x100 if tile_id & 0x80 else tile_id
+            tile_address = 0x1000 + signed_id * 16 + tile_y_offset
+        bank_base = 0x2000 if attrs & CGB_ATTR_VRAM_BANK else 0
+        lo = vram[bank_base + (tile_address & 0x1FFF)]
+        hi = vram[bank_base + ((tile_address + 1) & 0x1FFF)]
+        palette_offset = (attrs & CGB_ATTR_PALETTE_MASK) * 8
+        palette_ram = self.bus.bg_palette_ram
+        color_ids, pixels, priority = _decoded_cgb_tile_row(
+            lo,
+            hi,
+            attrs,
+            palette_ram[palette_offset],
+            palette_ram[palette_offset + 1],
+            palette_ram[palette_offset + 2],
+            palette_ram[palette_offset + 3],
+            palette_ram[palette_offset + 4],
+            palette_ram[palette_offset + 5],
+            palette_ram[palette_offset + 6],
+            palette_ram[palette_offset + 7],
+        )
+        if bit_offset == 0 and span == 8:
+            bg_color_ids[x : x + 8] = color_ids
+            row[x : x + 8] = pixels
+            bg_priorities[x : x + 8] = BOOL_RUNS_8[priority]
+            return
+        span_end = bit_offset + span
+        bg_color_ids[x : x + span] = color_ids[bit_offset:span_end]
+        row[x : x + span] = pixels[bit_offset:span_end]
+        bg_priorities[x : x + span] = (priority,) * span
 
     def _render_sprites_line(
         self,
@@ -2878,6 +3128,33 @@ class PPU:
         ):
             return
         target_x = max(self._line_render_x, min(SCREEN_WIDTH, target_x))
+        if (
+            self._line_render_x == 0
+            and target_x == SCREEN_WIDTH
+            and self._line_render_segments is not None
+            and len(self._line_render_segments) == 1
+        ):
+            base_state = self._line_render_segments[0][1]
+            render_state = self._window_activation_state_for_segment(
+                base_state,
+                0,
+                SCREEN_WIDTH,
+            )
+            self._line_window_used = (
+                self._render_scanline_segment(
+                    render_state,
+                    self._scanline,
+                    self._line_row,
+                    self._line_bg_color_ids,
+                    self._line_bg_priorities,
+                    0,
+                    SCREEN_WIDTH,
+                )
+                or self._line_window_used
+            )
+            self._line_render_x = SCREEN_WIDTH
+            self._line_render_state = base_state
+            return
         while self._line_render_x < target_x:
             state = self._state_at_render_x(self._line_render_x)
             segment_end = min(target_x, self._next_segment_start_after(self._line_render_x))

@@ -37,6 +37,7 @@ PPM_EIGHT_PIXEL_CHUNKS = tuple(
     + PPM_FOUR_PIXEL_CHUNKS[(index >> 8) & 0xFF]
     for index in range(65536)
 )
+PPM_RGB_PIXEL_BYTES_CACHE: dict[int, bytes] = {}
 
 DEFAULT_KEYMAP = {
     "z": "a",
@@ -72,7 +73,7 @@ class DisplayConfig:
     audio_enabled: bool = False
     audio_sample_rate: int = DEFAULT_SAMPLE_RATE
     audio_buffer_ms: int = 300
-    audio_chunk_ms: int = 20
+    audio_chunk_ms: int = 30
     audio_capture_path: Path | None = None
 
     def __post_init__(self) -> None:
@@ -173,9 +174,17 @@ def framebuffer_to_tk_ppm_data(framebuffer: list[list[int]]) -> bytes:
     wide_chunks = PPM_EIGHT_PIXEL_CHUNKS
     chunks = PPM_FOUR_PIXEL_CHUNKS
     if any(pixel & RGB_PIXEL_FLAG for row in framebuffer for pixel in row):
+        rgb_cache = PPM_RGB_PIXEL_BYTES_CACHE
         for row in framebuffer:
             for pixel in row:
-                data.extend(framebuffer_pixel_to_rgb(pixel))
+                if not pixel & RGB_PIXEL_FLAG:
+                    data.extend(pixels[pixel & 0x03])
+                    continue
+                pixel_bytes = rgb_cache.get(pixel)
+                if pixel_bytes is None:
+                    pixel_bytes = bytes(framebuffer_pixel_to_rgb(pixel))
+                    rgb_cache[pixel] = pixel_bytes
+                data.extend(pixel_bytes)
         return bytes(data)
     for row in framebuffer:
         x = 0
@@ -881,7 +890,7 @@ class TkDisplay:
     def _write_audio(self) -> AudioPlaybackStats | None:
         if self._audio_player is None:
             return None
-        samples = self.emulator.drain_audio_samples()
+        samples = self.emulator.drain_audio_samples(flush=False)
         if self._audio_capture is not None:
             self._audio_capture.write(samples)
         self._audio_player.write(samples)

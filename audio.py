@@ -14,6 +14,7 @@ PCM_SCALE = 64
 WAVE_MAPPER = 0xFFFFFFFF
 WAVE_FORMAT_PCM = 1
 WHDR_DONE = 0x00000001
+PCM16_SAMPLE_BYTES_CACHE: dict[AudioSample, bytes] = {}
 
 
 def _pcm16(value: int) -> int:
@@ -22,8 +23,14 @@ def _pcm16(value: int) -> int:
 
 def samples_to_pcm16_bytes(samples: Iterable[AudioSample]) -> bytes:
     payload = bytearray()
+    cache = PCM16_SAMPLE_BYTES_CACHE
     for left, right in samples:
-        payload.extend(struct.pack("<hh", _pcm16(left), _pcm16(right)))
+        sample = (left, right)
+        sample_bytes = cache.get(sample)
+        if sample_bytes is None:
+            sample_bytes = struct.pack("<hh", _pcm16(left), _pcm16(right))
+            cache[sample] = sample_bytes
+        payload.extend(sample_bytes)
     return bytes(payload)
 
 
